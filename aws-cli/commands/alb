@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst alb <command> [args]
+
+flow visibility (ELBv2 / ALB)
+
+commands:
+  ls                           list ALBs (Name, DNS, Scheme, VpcId)
+  listener <alb-name>          listeners: Port, Protocol, DefaultActions, Certificates
+  tg <alb-name>                target groups attached to ALB
+  health <tg-name>             target health for target group name
+  rule <listener-arn>          describe rules for listener
+  help                         this help
+
+examples:
+  awst alb ls
+  awst alb listener my-alb
+  awst alb tg my-alb
+  awst alb health my-tg
+EOF
+}
+
+get_alb_arn_by_name() {
+  local name="$1"
+  if [[ -z "$name" ]]; then
+    echo "internal: missing ALB name" >&2
+    return 1
+  fi
+  local arn
+  arn="$(aws elbv2 describe-load-balancers --names "$name" \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)"
+  if [[ -z "$arn" || "$arn" == "None" ]]; then
+    echo "ALB not found: $name" >&2
+    return 1
+  fi
+  printf '%s' "$arn"
+}
+
+get_tg_arn_by_name() {
+  local name="$1"
+  if [[ -z "$name" ]]; then
+    echo "internal: missing target group name" >&2
+    return 1
+  fi
+  local arn
+  arn="$(aws elbv2 describe-target-groups --names "$name" \
+    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
+  if [[ -z "$arn" || "$arn" == "None" ]]; then
+    echo "Target group not found: $name" >&2
+    return 1
+  fi
+  printf '%s' "$arn"
+}
+
+alb_ls() {
+  local query='LoadBalancers[].[LoadBalancerName,DNSName,Scheme,VpcId]'
+  echo -e "LoadBalancerName\tDNSName\tScheme\tVpcId"
+  aws elbv2 describe-load-balancers --query "$query" --output text | column -t -s $'\t'
+}
+
+alb_listener() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst alb listener <alb-name>" >&2
+    exit 1
+  fi
+  local lb_arn
+  lb_arn="$(get_alb_arn_by_name "$name")"
+  aws elbv2 describe-listeners --load-balancer-arn "$lb_arn" --output json | jq -r '
+    .Listeners[] |
+    "Listener \(.ListenerArn)",
+    "  Port: \(.Port)  Protocol: \(.Protocol)",
+    "  DefaultActions:",
+    (.DefaultActions | tojson | "    " + .),
+    (if ((.Certificates // []) | length) > 0 then
+      "  Certificates:", (.Certificates | tojson | "    " + .)
+    else
+      "  Certificates: []"
+    end),
+    ""
+  '
+}
+
+alb_tg() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst alb tg <alb-name>" >&2
+    exit 1
+  fi
+  local lb_arn
+  lb_arn="$(get_alb_arn_by_name "$name")"
+  local query='TargetGroups[].[TargetGroupName,Port,Protocol,HealthCheckPath]'
+  echo -e "TargetGroupName\tPort\tProtocol\tHealthCheckPath"
+  aws elbv2 describe-target-groups --load-balancer-arn "$lb_arn" \
+    --query "$query" --output text | column -t -s $'\t'
+}
+
+alb_health() {
+  local tg_name="${1:-}"
+  if [[ -z "$tg_name" ]]; then
+    echo "Usage: awst alb health <tg-name>" >&2
+    exit 1
+  fi
+  local tg_arn
+  tg_arn="$(get_tg_arn_by_name "$tg_name")"
+  local query='TargetHealthDescriptions[].[Target.Id,Target.Port,TargetHealth.State,TargetHealth.Reason]'
+  echo -e "TargetId\tPort\tState\tReason"
+  aws elbv2 describe-target-health --target-group-arn "$tg_arn" \
+    --query "$query" --output text | column -t -s $'\t'
+}
+
+alb_rule() {
+  local listener_arn="${1:-}"
+  if [[ -z "$listener_arn" ]]; then
+    echo "Usage: awst alb rule <listener-arn>" >&2
+    exit 1
+  fi
+  aws elbv2 describe-rules --listener-arn "$listener_arn" --output json | jq .
+}
+
+case "$sub" in
+  ls|list)
+    alb_ls
+    ;;
+  listener)
+    alb_listener "$@"
+    ;;
+  tg)
+    alb_tg "$@"
+    ;;
+  health)
+    alb_health "$@"
+    ;;
+  rule)
+    alb_rule "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown alb command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

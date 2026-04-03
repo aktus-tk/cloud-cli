@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+cmd="${1:-}"
+shift || true
+
+# e.g. CloudFront ACM: --region us-east-1 (may appear anywhere among args)
+AWS_OPTS=()
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --region)
+      [[ -n "${2:-}" ]] || { echo "acm: --region requires a value" >&2; exit 1; }
+      AWS_OPTS+=(--region "$2")
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${ARGS[@]}"
+
+acm_aws() {
+  aws "${AWS_OPTS[@]}" "$@"
+}
+
+acm_ls_csv() {
+  local query
+  query='CertificateSummaryList[].[
+    DomainName,
+    CertificateArn,
+    Status,
+    Type,
+    KeyAlgorithm,
+    InUse,
+    IssuedAt,
+    NotAfter
+  ]'
+  echo "DomainName,CertificateArn,Status,Type,KeyAlgorithm,InUse,IssuedAt,NotAfter"
+  acm_aws acm list-certificates \
+    --query "$query" \
+    --output text | tr '\t' ','
+}
+
+usage() {
+  cat <<EOF
+usage: awst acm <command> [options]
+
+global options (any order with other flags / ARNs):
+  --region <name>     ACM API region (e.g. us-east-1 for CloudFront)
+
+commands:
+  ls, list [--csv]              list certificates (table or CSV)
+  describe, show <arn>          full certificate JSON (pretty-printed via jq)
+  summary <arn>                 main fields + domain validation (readable)
+  tags <arn>                    list-tags-for-certificate
+  help                          show this help
+
+examples:
+  awst acm ls
+  awst acm ls --region us-east-1
+  awst acm ls --csv --region us-east-1
+  awst acm summary --region us-east-1 arn:aws:acm:us-east-1:123456789012:certificate/...
+  awst acm describe "\$ARN"
+  awst acm tags --region us-east-1 "\$ARN"
+EOF
+}
+
+case "$cmd" in
+  ls|list)
+    csv=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --csv) csv=1; shift ;;
+        *) echo "acm ls: unknown option: $1" >&2; exit 1 ;;
+      esac
+    done
+    if [[ "$csv" -eq 1 ]]; then
+      acm_ls_csv
+    else
+      acm_ls_csv | column -s, -t
+    fi
+    ;;
+  describe|show)
+    arn="${1:-}"
+    if [[ -z "$arn" ]]; then
+      echo "Usage: awst acm describe [--region R] <certificate-arn>" >&2
+      exit 1
+    fi
+    acm_aws acm describe-certificate --certificate-arn "$arn" | jq .
+    ;;
+  summary)
+    arn="${1:-}"
+    if [[ -z "$arn" ]]; then
+      echo "Usage: awst acm summary [--region R] <certificate-arn>" >&2
+      exit 1
+    fi
+    acm_aws acm describe-certificate --certificate-arn "$arn" --output json | jq '
+      .Certificate
+      | {
+          CertificateArn,
+          DomainName,
+          SubjectAlternativeNames,
+          Status,
+          Type,
+          InUse,
+          Issuer,
+          KeyAlgorithm,
+          SignatureAlgorithm,
+          NotBefore,
+          NotAfter,
+          RenewalEligibility,
+          RenewalSummary,
+          DomainValidationOptions,
+          Options,
+          StatusReason
+        }
+    '
+    ;;
+  tags)
+    arn="${1:-}"
+    if [[ -z "$arn" ]]; then
+      echo "Usage: awst acm tags [--region R] <certificate-arn>" >&2
+      exit 1
+    fi
+    acm_aws acm list-tags-for-certificate --certificate-arn "$arn" | jq .
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

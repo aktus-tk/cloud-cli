@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst sg <command> [args]
+
+permission visibility (security groups)
+
+commands:
+  ls                                    all security groups (summary)
+  show <sg-id|group-name>               inbound + outbound rules (readable)
+  ec2 <instance-name-or-id>             instance → security groups
+  alb <alb-name>                        ALB → security group IDs
+  check <src> <dst> <port>              logical path check (TCP)
+  check alb <alb-name> <dst> <port>     src = that ALB's security groups
+
+Logical check: needs egress on some src SG toward dst set (peer SG or 0.0.0.0/0)
+and ingress on some dst SG from src set (peer SG or 0.0.0.0/0) for TCP port.
+
+examples:
+  awst sg ls
+  awst sg show app-sg
+  awst sg ec2 web01
+  awst sg alb my-alb
+  awst sg check alb my-alb web01 443
+  awst sg check sg-aaa01234 sg-bbb01234 443
+EOF
+}
+
+get_alb_arn_by_name() {
+  local name="$1"
+  local arn
+  arn="$(aws elbv2 describe-load-balancers --names "$name" \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)"
+  if [[ -z "$arn" || "$arn" == "None" ]]; then
+    echo "ALB not found: $name" >&2
+    return 1
+  fi
+  printf '%s' "$arn"
+}
+
+resolve_sg_ids() {
+  local spec="$1"
+  if [[ "$spec" =~ ^sg-[0-9a-f]+$ ]]; then
+    echo "$spec"
+    return 0
+  fi
+  if [[ "$spec" =~ ^i-[0-9a-f]+$ ]]; then
+    aws ec2 describe-instances --instance-ids "$spec" \
+      --query 'Reservations[].Instances[].SecurityGroups[].GroupId' --output text |
+      tr '\t' '\n' | sort -u
+    return 0
+  fi
+
+  local iids
+  iids="$(aws ec2 describe-instances \
+    --filters "Name=tag:Name,Values=$spec" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  if [[ -n "$iids" ]]; then
+    local first
+    first="$(echo "$iids" | awk '{print $1}')"
+    resolve_sg_ids "$first"
+    return 0
+  fi
+
+  local gids
+  gids="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$spec" \
+    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
+  if [[ -n "$gids" ]]; then
+    echo "$gids" | tr '\t' '\n'
+    return 0
+  fi
+
+  echo "could not resolve security group reference: $spec" >&2
+  return 1
+}
+
+resolve_alb_src_sg_ids() {
+  local alb_name="$1"
+  local arn
+  arn="$(get_alb_arn_by_name "$alb_name")"
+  aws elbv2 describe-load-balancers --load-balancer-arns "$arn" \
+    --query 'LoadBalancers[0].SecurityGroups[]' --output text | tr '\t' '\n' | sed '/^$/d'
+}
+
+sg_ls() {
+  local query='SecurityGroups[].[GroupName,GroupId,VpcId,Description]'
+  echo -e "GroupName\tGroupId\tVpcId\tDescription"
+  aws ec2 describe-security-groups --query "$query" --output text | column -t -s $'\t'
+}
+
+sg_show_one_perm_line() {
+  local direction="$1"
+  jq -r --arg d "$direction" '
+    . as $rule |
+    ($rule.IpProtocol // "tcp") as $proto |
+    (
+      if ($proto == "-1") then "all"
+      elif ($rule.FromPort == null and $rule.ToPort == null) then "all"
+      else "\($rule.FromPort)-\($rule.ToPort)"
+      end
+    ) as $range |
+    (
+      [ $rule.IpRanges[]? | "CIDR=\(.CidrIp)" ] +
+      [ $rule.UserIdGroupPairs[]? | "SG=\(.GroupId) (\(.GroupName // ""))" ] +
+      [ $rule.PrefixListIds[]? | "PL=\(.PrefixListId)" ]
+    ) | if length > 0 then . else ["(none listed)"] end
+    | .[] |
+    "\($d)\t\($proto)\t\($range)\t\(.)"
+  '
+}
+
+sg_show() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "Usage: awst sg show <sg-id|group-name>" >&2
+    exit 1
+  fi
+
+  local gid
+  if [[ "$key" =~ ^sg- ]]; then
+    gid="$key"
+  else
+    gid="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$key" \
+      --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
+    if [[ -z "$gid" || "$gid" == "None" ]]; then
+      echo "Security group not found: $key" >&2
+      exit 1
+    fi
+  fi
+
+  local json
+  json="$(aws ec2 describe-security-groups --group-ids "$gid" --output json)"
+  echo "$json" | jq -r '.SecurityGroups[0] |
+    "GroupId: \(.GroupId)",
+    "GroupName: \(.GroupName)",
+    "VpcId: \(.VpcId)",
+    "Description: \(.Description)",
+    ""'
+
+  echo "=== Inbound ==="
+  echo -e "Dir\tProto\tPorts\tSource"
+  echo "$json" | jq -c '.SecurityGroups[0].IpPermissions[]?' 2>/dev/null | while read -r row; do
+    [[ -z "$row" ]] && continue
+    echo "$row" | sg_show_one_perm_line "IN"
+  done | column -t -s $'\t' || true
+
+  echo ""
+  echo "=== Outbound ==="
+  echo -e "Dir\tProto\tPorts\tDestination"
+  echo "$json" | jq -c '.SecurityGroups[0].IpPermissionsEgress[]?' 2>/dev/null | while read -r row; do
+    [[ -z "$row" ]] && continue
+    echo "$row" | sg_show_one_perm_line "OUT"
+  done | column -t -s $'\t' || true
+}
+
+sg_ec2() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sg ec2 <instance-name-or-id>" >&2
+    exit 1
+  fi
+
+  local iid="$name"
+  if [[ ! "$name" =~ ^i- ]]; then
+    iid="$(aws ec2 describe-instances --filters "Name=tag:Name,Values=$name" \
+      --query 'Reservations[].Instances[].InstanceId' --output text | awk '{print $1}')"
+  fi
+  if [[ -z "$iid" || "$iid" == "None" ]]; then
+    echo "Instance not found: $name" >&2
+    exit 1
+  fi
+
+  echo -e "InstanceId\tSecurityGroupIds"
+  aws ec2 describe-instances --instance-ids "$iid" \
+    --query 'Reservations[].Instances[].[InstanceId,join(`,`, SecurityGroups[].GroupId)]' \
+    --output text | column -t -s $'\t'
+}
+
+sg_alb() {
+  local alb_name="${1:-}"
+  if [[ -z "$alb_name" ]]; then
+    echo "Usage: awst sg alb <alb-name>" >&2
+    exit 1
+  fi
+  local arn
+  arn="$(get_alb_arn_by_name "$alb_name")"
+  local ids
+  ids="$(aws elbv2 describe-load-balancers --load-balancer-arns "$arn" \
+    --query 'LoadBalancers[0].SecurityGroups' --output text | tr '\t' ' ')"
+
+  echo "LoadBalancerName: $alb_name"
+  echo "SecurityGroupIds: ${ids:-}"
+}
+
+# Shared logical path evaluation (TCP port, src SG set × dst SG set)
+sg_pair_eval() {
+  local port="$1"
+  local data="$2"
+  local src_json="$3"
+  local dst_json="$4"
+
+  echo "$data" | jq -r --argjson p "$port" --argjson src "$src_json" --argjson dst "$dst_json" '
+    def port_ok($fp; $tp; $want; $proto):
+      if ($proto == "-1") then true
+      elif ($fp == null and $tp == null) then true
+      else ($want >= $fp and $want <= $tp)
+      end;
+
+    def proto_tcp_ok($proto):
+      ($proto == "tcp") or ($proto == "6") or ($proto == "-1");
+
+    def cidr_any($ranges):
+      (($ranges // []) | map(.CidrIp) | index("0.0.0.0/0")) != null;
+
+    def sg_refs_overlap($pairs; $cands):
+      (($pairs // []) | map(.GroupId)) as $gids |
+      (($cands // []) | map(. as $c | ($gids | index($c) != null)) | any);
+
+    def ingress_ok($rule; $srcs; $port):
+      proto_tcp_ok($rule.IpProtocol) and
+      port_ok($rule.FromPort; $rule.ToPort; $port; $rule.IpProtocol) and
+      (cidr_any($rule.IpRanges) or sg_refs_overlap($rule.UserIdGroupPairs; $srcs));
+
+    def egress_ok($rule; $dsts; $port):
+      proto_tcp_ok($rule.IpProtocol) and
+      port_ok($rule.FromPort; $rule.ToPort; $port; $rule.IpProtocol) and
+      (cidr_any($rule.IpRanges) or sg_refs_overlap($rule.UserIdGroupPairs; $dsts));
+
+    def any_ingress($sg; $srcs; $port):
+      ($sg.IpPermissions // []) | map(select(ingress_ok(.; $srcs; $port))) | length > 0;
+
+    def any_egress($sg; $dsts; $port):
+      ($sg.IpPermissionsEgress // []) | map(select(egress_ok(.; $dsts; $port))) | length > 0;
+
+    ($src) as $S |
+    ($dst) as $D |
+    [.SecurityGroups[] | select(.GroupId as $g | $S | index($g))] as $srcSgs |
+    [.SecurityGroups[] | select(.GroupId as $g | $D | index($g))] as $dstSgs |
+    if ($srcSgs | length) == 0 or ($dstSgs | length) == 0 then
+      "error: missing security group data for resolved ids"
+    else
+      [
+        range(0; $srcSgs | length) as $i |
+        range(0; $dstSgs | length) as $j |
+        {
+          src: $srcSgs[$i].GroupId,
+          dst: $dstSgs[$j].GroupId,
+          egressOK: any_egress($srcSgs[$i]; $D; $p),
+          ingressOK: any_ingress($dstSgs[$j]; $S; $p)
+        }
+      ] as $pairs |
+      ($pairs | map(select(.egressOK and .ingressOK)) | .[0]) as $hit |
+      if $hit then
+        "ALLOW: pair \($hit.src) → \($hit.dst): egress+ingress allow TCP \($p) (SG peer or 0.0.0.0/0)"
+      else
+        ($pairs | map(select(.egressOK | not)) | .[0] // null) as $e1 |
+        ($pairs | map(select(.ingressOK | not)) | .[0] // null) as $e2 |
+        if $e1 != null then
+          "DENY: src \($e1.src) has no egress rule to reach dst set on TCP \($p) (peer dst SG or 0.0.0.0/0)"
+        elif $e2 != null then
+          "DENY: dst \($e2.dst) has no ingress from src set on TCP \($p) (peer src SG or 0.0.0.0/0)"
+        else
+          "DENY: no src/dst pair satisfied for TCP \($p)"
+        end
+      end
+    end
+  '
+}
+
+sg_check_run() {
+  local src_spec="$1"
+  local dst_spec="$2"
+  local port="$3"
+
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 || "$port" -gt 65535 ]]; then
+    echo "port must be 1-65535: $port" >&2
+    exit 1
+  fi
+
+  mapfile -t src_ids < <(resolve_sg_ids "$src_spec" | sort -u)
+  mapfile -t dst_ids < <(resolve_sg_ids "$dst_spec" | sort -u)
+
+  if [[ ${#src_ids[@]} -eq 0 || ${#dst_ids[@]} -eq 0 ]]; then
+    exit 1
+  fi
+
+  local -a uniq=()
+  mapfile -t uniq < <(printf '%s\n' "${src_ids[@]}" "${dst_ids[@]}" | sort -u)
+  local data
+  data="$(aws ec2 describe-security-groups --group-ids "${uniq[@]}" --output json)"
+
+  local src_json dst_json result
+  src_json="$(jq -n --args '$ARGS.positional' "${src_ids[@]}")"
+  dst_json="$(jq -n --args '$ARGS.positional' "${dst_ids[@]}")"
+  result="$(sg_pair_eval "$port" "$data" "$src_json" "$dst_json")"
+
+  echo "$result"
+  if [[ "$result" == ALLOW:* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+sg_check_alb() {
+  local alb_name="$1"
+  local dst_spec="$2"
+  local port="$3"
+
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 || "$port" -gt 65535 ]]; then
+    echo "port must be 1-65535: $port" >&2
+    exit 1
+  fi
+
+  mapfile -t src_ids < <(resolve_alb_src_sg_ids "$alb_name" | sort -u)
+  if [[ ${#src_ids[@]} -eq 0 ]]; then
+    echo "no security groups on ALB: $alb_name" >&2
+    exit 1
+  fi
+
+  mapfile -t dst_ids < <(resolve_sg_ids "$dst_spec" | sort -u)
+  if [[ ${#dst_ids[@]} -eq 0 ]]; then
+    exit 1
+  fi
+
+  local -a uniq=()
+  mapfile -t uniq < <(printf '%s\n' "${src_ids[@]}" "${dst_ids[@]}" | sort -u)
+  local data src_json dst_json result
+  data="$(aws ec2 describe-security-groups --group-ids "${uniq[@]}" --output json)"
+  src_json="$(jq -n --args '$ARGS.positional' "${src_ids[@]}")"
+  dst_json="$(jq -n --args '$ARGS.positional' "${dst_ids[@]}")"
+  result="$(sg_pair_eval "$port" "$data" "$src_json" "$dst_json")"
+
+  echo "$result"
+  if [[ "$result" == ALLOW:* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+case "$sub" in
+  ls|list)
+    sg_ls
+    ;;
+  show)
+    sg_show "$@"
+    ;;
+  ec2)
+    sg_ec2 "$@"
+    ;;
+  alb)
+    sg_alb "$@"
+    ;;
+  check)
+    if [[ "${1:-}" == "alb" ]]; then
+      [[ $# -ge 4 ]] || { echo "Usage: awst sg check alb <alb-name> <dst> <port>" >&2; exit 1; }
+      sg_check_alb "$2" "$3" "$4"
+    else
+      [[ $# -ge 3 ]] || { echo "Usage: awst sg check <src> <dst> <port>" >&2; echo "       awst sg check alb <alb-name> <dst> <port>" >&2; exit 1; }
+      sg_check_run "$1" "$2" "$3"
+    fi
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown sg command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

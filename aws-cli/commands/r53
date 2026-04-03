@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+set -e
+
+cmd="${1:-}"
+shift || true
+
+# List all hosted zones
+zones_list() {
+  aws route53 list-hosted-zones \
+    --query "HostedZones[].[Name,Id]" \
+    --output text
+}
+
+# List resource record sets for a specific zone
+zones_records() {
+  local zone_name="$1"
+
+  if [[ -z "$zone_name" ]]; then
+    echo "Usage: awst r53 records <zone-name>"
+    echo
+    echo "Example: awst r53 records example.com"
+    exit 1
+  fi
+
+  # Add trailing dot if not present
+  [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
+
+  # Find the zone ID
+  local zone_id
+  zone_id=$(zones_list | awk -v z="$zone_name" '$1 == z {print $2}' | head -1)
+
+  if [[ -z "$zone_id" ]]; then
+    echo "Zone not found: $zone_name" >&2
+    exit 1
+  fi
+
+  # Output header
+  cols="Name,Type,AliasTarget.DNSName,AliasTarget.EvaluateTargetHealth,ResourceRecords[0].Value,ResourceRecords[1].Value,ResourceRecords[2].Value,ResourceRecords[3].Value"
+  echo "$cols"
+
+  # List records
+  aws route53 list-resource-record-sets \
+    --hosted-zone-id "$zone_id" \
+    --query "ResourceRecordSets[].[$cols]" \
+    | jq -r '.[]|@csv'
+}
+
+# Get zone ID by zone name
+get_zone_id() {
+  local zone_name="$1"
+  [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
+  zones_list | awk -v z="$zone_name" '$1 == z {print $2}' | head -1
+}
+
+# Create a new resource record
+create_record() {
+  local zone_name="$1" record_name="$2" type="$3" value="$4" ttl="${5:-300}"
+
+  if [[ -z "$zone_name" ]] || [[ -z "$record_name" ]] || [[ -z "$type" ]] || [[ -z "$value" ]]; then
+    echo "Usage: awst r53 create <zone-name> <record-name> <type> <value> [ttl]" >&2
+    echo "Example: awst r53 create example.com www A 192.0.2.1 300" >&2
+    exit 1
+  fi
+
+  # Add trailing dot if not present
+  [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
+
+  # Auto-append zone name if record_name is not fully qualified
+  if [[ "$record_name" != *. ]]; then
+    # Check if record_name already contains zone name
+    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
+      record_name="${record_name}.${zone_name%\.}"
+    fi
+  fi
+  [[ "$record_name" == *. ]] || record_name="${record_name}."
+
+  local zone_id
+  zone_id=$(get_zone_id "$zone_name")
+  if [[ -z "$zone_id" ]]; then
+    echo "Zone not found: $zone_name" >&2
+    exit 1
+  fi
+
+  # Create change batch JSON using jq for proper escaping
+  # For TXT records, AWS requires the value to be enclosed in quotes
+  local quoted_value="$value"
+  if [[ "$type" == "TXT" ]]; then
+    quoted_value="\"$value\""
+  fi
+
+  local change_batch=$(jq -n \
+    --arg name "$record_name" \
+    --arg type "$type" \
+    --arg ttl "$ttl" \
+    --arg value "$quoted_value" \
+    '{
+      Changes: [{
+        Action: "CREATE",
+        ResourceRecordSet: {
+          Name: $name,
+          Type: $type,
+          TTL: ($ttl | tonumber),
+          ResourceRecords: [{Value: $value}]
+        }
+      }]
+    }')
+
+  echo "Creating record: $record_name ($type) -> $value (TTL: $ttl)"
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id "$zone_id" \
+    --change-batch "$change_batch"
+
+  echo "Record created successfully"
+}
+
+# Update an existing resource record
+update_record() {
+  local zone_name="$1" record_name="$2" type="$3" value="$4" ttl="${5:-300}"
+
+  if [[ -z "$zone_name" ]] || [[ -z "$record_name" ]] || [[ -z "$type" ]] || [[ -z "$value" ]]; then
+    echo "Usage: awst r53 update <zone-name> <record-name> <type> <value> [ttl]" >&2
+    exit 1
+  fi
+
+  # Add trailing dot if not present
+  [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
+
+  # Auto-append zone name if record_name is not fully qualified
+  if [[ "$record_name" != *. ]]; then
+    # Check if record_name already contains zone name
+    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
+      record_name="${record_name}.${zone_name%\.}"
+    fi
+  fi
+  [[ "$record_name" == *. ]] || record_name="${record_name}."
+
+  local zone_id
+  zone_id=$(get_zone_id "$zone_name")
+  if [[ -z "$zone_id" ]]; then
+    echo "Zone not found: $zone_name" >&2
+    exit 1
+  fi
+
+  # Create change batch JSON using jq for proper escaping
+  # For TXT records, AWS requires the value to be enclosed in quotes
+  local quoted_value="$value"
+  if [[ "$type" == "TXT" ]]; then
+    quoted_value="\"$value\""
+  fi
+
+  local change_batch=$(jq -n \
+    --arg name "$record_name" \
+    --arg type "$type" \
+    --arg ttl "$ttl" \
+    --arg value "$quoted_value" \
+    '{
+      Changes: [{
+        Action: "UPSERT",
+        ResourceRecordSet: {
+          Name: $name,
+          Type: $type,
+          TTL: ($ttl | tonumber),
+          ResourceRecords: [{Value: $value}]
+        }
+      }]
+    }')
+
+  echo "Updating record: $record_name ($type) -> $value (TTL: $ttl)"
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id "$zone_id" \
+    --change-batch "$change_batch"
+
+  echo "Record updated successfully"
+}
+
+# Delete a resource record
+delete_record() {
+  local zone_name="$1" record_name="$2" type="$3"
+
+  if [[ -z "$zone_name" ]] || [[ -z "$record_name" ]] || [[ -z "$type" ]]; then
+    echo "Usage: awst r53 delete <zone-name> <record-name> <type>" >&2
+    exit 1
+  fi
+
+  # Add trailing dot if not present
+  [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
+
+  # Auto-append zone name if record_name is not fully qualified
+  if [[ "$record_name" != *. ]]; then
+    # Check if record_name already contains zone name
+    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
+      record_name="${record_name}.${zone_name%\.}"
+    fi
+  fi
+  [[ "$record_name" == *. ]] || record_name="${record_name}."
+
+  local zone_id
+  zone_id=$(get_zone_id "$zone_name")
+  if [[ -z "$zone_id" ]]; then
+    echo "Zone not found: $zone_name" >&2
+    exit 1
+  fi
+
+  # Get current record details
+  local record_data
+  record_data=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id "$zone_id" \
+    --query "ResourceRecordSets[?Name=='$record_name' && Type=='$type'].[TTL,ResourceRecords[*].Value]" \
+    --output json)
+
+  if [[ "$(echo "$record_data" | jq 'length')" == "0" ]]; then
+    echo "Record not found: $record_name ($type)" >&2
+    exit 1
+  fi
+
+  local ttl=$(echo "$record_data" | jq -r '.[0][0]')
+  local value=$(echo "$record_data" | jq -r '.[0][1][0]')
+
+  # Create change batch JSON using jq for proper escaping
+  local change_batch=$(jq -n \
+    --arg name "$record_name" \
+    --arg type "$type" \
+    --arg ttl "$ttl" \
+    --arg value "$value" \
+    '{
+      Changes: [{
+        Action: "DELETE",
+        ResourceRecordSet: {
+          Name: $name,
+          Type: $type,
+          TTL: ($ttl | tonumber),
+          ResourceRecords: [{Value: $value}]
+        }
+      }]
+    }')
+
+  echo "Deleting record: $record_name ($type)"
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id "$zone_id" \
+    --change-batch "$change_batch"
+
+  echo "Record deleted successfully"
+}
+
+# Display help
+usage() {
+  cat <<EOF
+usage: awst r53 <command> [options]
+
+commands:
+  zones                                  list all hosted zones
+  records <zone-name>                    list resource records for a zone
+  create <zone> <name> <type> <value> [ttl]   create a new record
+  update <zone> <name> <type> <value> [ttl]   update/create a record (upsert)
+  delete <zone> <name> <type>            delete a record
+  help                                   show this help
+
+examples:
+  awst r53 zones
+  awst r53 records example.com
+  awst r53 create example.com www A 192.0.2.1 300
+  awst r53 update example.com www A 192.0.2.2
+  awst r53 delete example.com www A
+EOF
+}
+
+case "$cmd" in
+  zones)
+    zones_list
+    ;;
+  records)
+    zones_records "$@"
+    ;;
+  create)
+    create_record "$@"
+    ;;
+  update)
+    update_record "$@"
+    ;;
+  delete)
+    delete_record "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

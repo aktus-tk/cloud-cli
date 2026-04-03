@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+cvm_get_id () {
+  local name=$1
+  local filters id
+  filters=$(jq -cn --arg n "$name" '[{Name: "instance-name", Values: [$n]}]')
+  id=$(tccli cvm DescribeInstances --Filters "$filters" --output json \
+    | jq -r '.InstanceSet[0].InstanceId // empty')
+  if [[ -n "$id" ]]; then
+    echo "$id"
+    return 0
+  fi
+  tccli cvm DescribeInstances --output json | jq -r --arg n "$name" '
+    .InstanceSet[]?
+    | select([.Tags[]? | select(.Key == "Name" and .Value == $n)] | length > 0)
+    | .InstanceId' | head -1
+}
+
+# cvm_ls_csv () {
+#   echo "Name,InstanceId,State,InstanceType,PrivateIp,PublicIp"
+#   tccli cvm DescribeInstances --output json | jq -r '
+#     .InstanceSet[]? | [
+#       ([.Tags[]? | select(.Key == "Name") | .Value] | first) // "",
+#       .InstanceId,
+#       .InstanceState.Name,
+#       .InstanceType,
+#       (.PrivateIpAddresses[0] // ""),
+#       (.PublicIpAddresses[0] // "")
+#     ] | @csv'
+# }
+
+cvm_ls () {
+
+   echo "InstanceName,Zone,InstanceId,InstanceType,Status,CPU,Memory,PrivateIP,PublicIP,VpcId,SubnetId,OsName,SecurityGroupId,SystemDisk,DataDisks"
+   tccli cvm DescribeInstances --Limit 100 | jq -r '.InstanceSet | sort_by(.InstanceName) | .[] | [.InstanceName,.Placement.Zone,.InstanceId,.InstanceType,.InstanceState,.CPU,.Memory,.PrivateIpAddresses[0],.PublicIpAddresses[0],.VirtualPrivateCloud.VpcId,.VirtualPrivateCloud.SubnetId,.OsName,.SecurityGroupIds[0],(.SystemDisk.DiskType + ":" + (.SystemDisk.DiskSize | tostring)),([.DataDisks[]? | .DiskType + ":" + (.DiskSize | tostring)] | join(";"))] | @csv'
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      cvm_ls 
+    else
+      cvm_ls | column -t -s $'\t'
+    fi
+    ;;
+  start)
+    id=$(cvm_get_id "$1")
+    [[ -n "$id" ]] || { echo "no instance: $1" >&2; exit 1; }
+    ids_json=$(jq -cn --arg id "$id" '[$id]')
+    tccli cvm StartInstances --InstanceIds "$ids_json"
+    ;;
+  stop)
+    id=$(cvm_get_id "$1")
+    [[ -n "$id" ]] || { echo "no instance: $1" >&2; exit 1; }
+    ids_json=$(jq -cn --arg id "$id" '[$id]')
+    tccli cvm StopInstances --InstanceIds "$ids_json"
+    ;;
+  help|-h|--help|"")
+    echo "cvm commands:"
+    echo "  ls         list instances (DescribeInstances)"
+    echo "  ls --csv   CSV output"
+    echo "  start NAME start instance (by instance-name or tag Name)"
+    echo "  stop NAME  stop instance"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit cvm help" >&2
+    exit 1
+    ;;
+esac

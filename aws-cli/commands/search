@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -e
+
+usage () {
+cat <<EOF
+usage: awst search <query>
+
+examples:
+  awst search services
+  awst search all
+  awst search [ ec2 | sg | rds | ...]
+EOF
+}
+
+search_csv () {
+  local query="$1"
+
+  echo "Service,ResourceType,Region,Arn"
+  aws resource-explorer-2 search \
+    --query-string "$query" \
+    --query 'Resources[].[
+      Service,
+      ResourceType,
+      Region,
+      Arn
+    ]' \
+    --output text | tr '\t' ','
+}
+
+search_services () {
+  aws resource-explorer-2 search \
+    --query-string "*" \
+    --query 'Resources[].Service' \
+    --output text | tr '\t' '\n' | sort -u
+}
+
+main () {
+
+cmd="${1:-}"
+shift || true
+
+query=""
+
+case "$cmd" in
+  services)
+  search_services
+  return
+  ;;
+  all) 
+  query="*" 
+  ;;
+  ""|-h|--help|help)
+  usage
+  return
+  ;;
+  *) 
+  query=$cmd  
+  ;;
+esac
+
+if [[ "$1" == "--csv" ]]; then
+  search_csv "$query"
+else
+  search_csv "$query" | column -s, -t
+fi
+
+}
+
+main "$@"

@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# CloudFront (GLOBAL) WAFv2 only — region us-east-1, scope CLOUDFRONT
+set -euo pipefail
+
+REGION="us-east-1"
+SCOPE="CLOUDFRONT"
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst waf {ls|show|assoc|cf}
+
+CloudFront Web ACLs (WAFv2) in us-east-1 only.
+
+  ls                  list Web ACLs: Name, Id, ARN
+  show <name|id>      Web ACL detail (default action, rules, metrics)
+  assoc <web-acl-arn> CloudFront distributions using this Web ACL
+  cf <distribution-id>  WebACLId on that distribution (or no WAF)
+
+examples:
+  awst waf ls
+  awst waf show my-waf
+  awst waf assoc arn:aws:wafv2:us-east-1:123456789012:global/webacl/...
+  awst waf cf E123ABC456
+EOF
+}
+
+# JSON array of all WebACL summaries (paginated list-web-acls)
+waf_list_all_summaries_json() {
+  local marker="" all='[]'
+  local resp part
+  while true; do
+    if [[ -z "$marker" ]]; then
+      resp="$(aws wafv2 list-web-acls --scope "$SCOPE" --region "$REGION" --output json)"
+    else
+      resp="$(aws wafv2 list-web-acls --scope "$SCOPE" --region "$REGION" \
+        --next-marker "$marker" --output json)"
+    fi
+    part="$(echo "$resp" | jq '[.WebACLs[]?]')"
+    all="$(jq -n --argjson a "$all" --argjson b "$part" '$a + $b')"
+    marker="$(echo "$resp" | jq -r '.NextMarker // empty')"
+    [[ -z "$marker" ]] && break
+  done
+  echo "$all"
+}
+
+# stdout: name<TAB>id; stderr + exit 1 if not found
+waf_resolve_name_id() {
+  local q="${1:-}"
+  if [[ -z "$q" ]]; then
+    echo "Usage: awst waf show <name|id>" >&2
+    exit 1
+  fi
+  local all row
+  all="$(waf_list_all_summaries_json)"
+  row="$(echo "$all" | jq -c --arg q "$q" '.[] | select(.Id == $q)' | head -n1)"
+  if [[ -z "$row" ]]; then
+    row="$(echo "$all" | jq -c --arg q "$q" '.[] | select(.Name == $q)' | head -n1)"
+  fi
+  if [[ -z "$row" ]]; then
+    echo "not found: $q" >&2
+    return 1
+  fi
+  echo "$row" | jq -r '[.Name, .Id] | @tsv'
+}
+
+waf_ls() {
+  local all
+  all="$(waf_list_all_summaries_json)"
+  local n
+  n="$(echo "$all" | jq 'length')"
+  if [[ "$n" -eq 0 ]]; then
+    echo "(no Web ACLs)"
+    return 0
+  fi
+  echo -e "Name\tId\tARN"
+  echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | column -t -s $'\t'
+}
+
+waf_show() {
+  local q="${1:-}"
+  local name id out resolved
+  resolved="$(waf_resolve_name_id "$q")" || exit 1
+  IFS=$'\t' read -r name id <<<"$resolved"
+
+  out="$(aws wafv2 get-web-acl --scope "$SCOPE" --region "$REGION" \
+    --name "$name" --id "$id" --output json 2>/dev/null)" || {
+    echo "not found: $q" >&2
+    return 1
+  }
+
+  echo "$out" | jq -r '
+    .WebACL as $w |
+    "Name: \($w.Name)",
+    (
+      $w.DefaultAction |
+      if .Allow != null then "DefaultAction: ALLOW"
+      elif .Block != null then "DefaultAction: BLOCK"
+      else "DefaultAction: ?"
+      end
+    ),
+    (
+      ($w.VisibilityConfig // {}) | .MetricName // "" |
+      if . != "" then "VisibilityConfig (metrics): \(.)" else empty end
+    ),
+    ""
+  '
+
+  local rules_len
+  rules_len="$(echo "$out" | jq '.WebACL.Rules // [] | length')"
+  if [[ "$rules_len" -eq 0 ]]; then
+    echo "Rules: (none)"
+    return 0
+  fi
+
+  echo "Rules:"
+  echo -e "Priority\tName\tAction\tMetrics"
+  echo "$out" | jq -r '
+    .WebACL.Rules[]? |
+    (
+      if .Action.Allow != null then "ALLOW"
+      elif .Action.Block != null then "BLOCK"
+      elif .Action.Count != null then "COUNT"
+      elif .OverrideAction.Count != null then "COUNT"
+      elif .OverrideAction.None != null then "RULE_GROUP"
+      else "?"
+      end
+    ) as $act |
+    [
+      (.Priority | tostring),
+      .Name,
+      $act,
+      ((.VisibilityConfig // {}) | .MetricName // "-")
+    ] | @tsv
+  ' | column -t -s $'\t'
+}
+
+waf_assoc() {
+  local arn="${1:-}"
+  if [[ -z "$arn" ]]; then
+    echo "Usage: awst waf assoc <web-acl-arn>" >&2
+    exit 1
+  fi
+  # CloudFront: use ListDistributionsByWebACLId (--web-acl-id is the WAFv2 ARN).
+  # (WAF ListResourcesForWebACL is not used for CloudFront per AWS docs.)
+  local marker="" combined='[]' json part
+  while true; do
+    if [[ -z "$marker" ]]; then
+      json="$(aws cloudfront list-distributions-by-web-acl-id \
+        --web-acl-id "$arn" --output json 2>/dev/null)" || {
+        echo "failed to list distributions for Web ACL" >&2
+        return 1
+      }
+    else
+      json="$(aws cloudfront list-distributions-by-web-acl-id \
+        --web-acl-id "$arn" --marker "$marker" --output json 2>/dev/null)" || {
+        echo "failed to list distributions for Web ACL" >&2
+        return 1
+      }
+    fi
+    part="$(echo "$json" | jq '(.DistributionList // {}) | (.Items // []) | [.[] | .Id]')"
+    combined="$(jq -n --argjson a "$combined" --argjson b "$part" '$a + $b')"
+    marker="$(echo "$json" | jq -r '.DistributionList.NextMarker // empty')"
+    [[ -z "$marker" ]] && break
+  done
+
+  local n
+  n="$(echo "$combined" | jq 'length')"
+  if [[ "$n" -eq 0 ]]; then
+    echo "(no CloudFront distributions)"
+    return 0
+  fi
+  echo "DistributionId"
+  echo "$combined" | jq -r '.[]'
+}
+
+waf_cf() {
+  local dist_id="${1:-}"
+  if [[ -z "$dist_id" ]]; then
+    echo "Usage: awst waf cf <distribution-id>" >&2
+    exit 1
+  fi
+  local json
+  json="$(aws cloudfront get-distribution-config --id "$dist_id" --output json 2>/dev/null)" || {
+    echo "not found: $dist_id" >&2
+    return 1
+  }
+
+  local wid
+  wid="$(echo "$json" | jq -r '.DistributionConfig.WebACLId // empty')"
+  if [[ -z "$wid" || "$wid" == "null" ]]; then
+    echo "No WAF attached"
+    return 0
+  fi
+  echo "WebACLId: $wid"
+}
+
+case "$sub" in
+  ls|list)
+    waf_ls
+    ;;
+  show)
+    waf_show "${1:-}"
+    ;;
+  assoc)
+    waf_assoc "${1:-}"
+    ;;
+  cf)
+    waf_cf "${1:-}"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown waf command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

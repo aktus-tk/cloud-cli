@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+BASE="$HOME/tools/aws-cli"
+CMD="$1"
+
+if [[ -z "$CMD" ]]; then
+  echo "usage: awst <command>"
+  echo
+  echo "available commands:"
+  ls "$BASE/commands"
+  exit 1
+fi
+
+shift
+
+COMMAND="$BASE/commands/$CMD"
+
+if [[ ! -x "$COMMAND" ]]; then
+  echo "unknown command: $CMD"
+  exit 1
+fi
+
+# 引数なしなら help
+if [[ $# -eq 0 ]]; then
+  exec "$COMMAND" help
+else
+  exec "$COMMAND" "$@"
+fi

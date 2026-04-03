@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+teo_describe_rules () {
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    local zone=$1
+    shift
+    tccli teo DescribeRules --ZoneId "$zone" "$@"
+  else
+    tccli teo DescribeRules "$@"
+  fi
+}
+
+case "$cmd" in
+  describe-rules|DescribeRules)
+    teo_describe_rules "$@"
+    ;;
+  zones)
+   tccli teo DescribeZones --cli-unfold-argument --filter 'Zones[].[ZoneId,ZoneName,Status,ActiveStatus,AliasZoneName]'  --output text
+   ;;
+  help|-h|--help|"")
+    echo "teo commands (Tencent Cloud EdgeOne / TEO):"
+    echo "  describe-rules ZONE_ID   DescribeRules (--ZoneId ZONE_ID; extra args forwarded to tccli)"
+    echo "  describe-rules --ZoneId ZONE_ID [...]   pass flags directly to tccli teo DescribeRules"
+    echo
+    echo "Examples:"
+    echo "  tcclit teo zones"
+    echo "  tcclit teo describe-rules zone-xxxxx"
+    echo "  tcclit teo describe-rules zone-xxxxx --output json"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit teo help" >&2
+    exit 1
+    ;;
+esac

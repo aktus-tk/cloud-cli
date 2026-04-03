@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub=$1
+shift || true
+
+case "$sub" in
+
+  # -----------------------------
+  # create instance + static ip
+  # -----------------------------
+  create)
+    NAME="$1"
+    if [ -z "$NAME" ]; then
+      echo "Usage: awst lightsail create <name>"
+      exit 1
+    fi
+
+    AZ="${AWST_AZ:-ap-northeast-1a}"
+    BLUEPRINT="${AWST_BLUEPRINT:-ubuntu_24_04}"
+    BUNDLE="${AWST_BUNDLE:-small_3_0}"
+
+    echo "==> create instance: $NAME"
+
+    if aws lightsail get-instance --instance-name "$NAME" >/dev/null 2>&1; then
+      echo "already exists: $NAME"
+      exit 0
+    fi
+
+    printf "create Lightsail instance '%s' (AZ=%s blueprint=%s bundle=%s)? [y/N] " \
+      "$NAME" "$AZ" "$BLUEPRINT" "$BUNDLE" 
+    read -r ans
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *)
+        echo "aborted"
+        exit 1
+        ;;
+    esac
+
+    aws lightsail create-instances \
+      --instance-names "$NAME" \
+      --availability-zone "$AZ" \
+      --blueprint-id "$BLUEPRINT" \
+      --bundle-id "$BUNDLE" \
+      --ip-address-type dualstack
+
+    echo "==> allocate static ip"
+    aws lightsail allocate-static-ip \
+      --static-ip-name "${NAME}-ip"
+
+    echo "==> wait for running"
+    while true; do
+      state=$(aws lightsail get-instances \
+        --query "instances[?name=='${NAME}'].state.name" \
+        --output text | head -1)
+      if [ "$state" = "running" ]; then
+        break
+      fi
+      echo "   state=${state:-unknown} (sleep 5s)"
+      sleep 5
+    done
+
+    echo "==> attach static ip"
+    aws lightsail attach-static-ip \
+      --static-ip-name "${NAME}-ip" \
+      --instance-name "$NAME"
+
+    echo "==> public ip"
+    aws lightsail get-static-ip \
+      --static-ip-name "${NAME}-ip" \
+      --query "staticIp.ipAddress" \
+      --output text
+    ;;
+
+  # -----------------------------
+  # delete instance (static ip は残す)
+  # -----------------------------
+  delete)
+    NAME="$1"
+    if [ -z "$NAME" ]; then
+      echo "Usage: awst lightsail delete <name>"
+      exit 1
+    fi
+
+    if ! aws lightsail get-instance --instance-name "$NAME" >/dev/null 2>&1; then
+      echo "not found: $NAME"
+      exit 1
+    fi
+
+    printf "delete Lightsail instance '%s' (static IP は削除しません)? [y/N] " "$NAME"
+    read -r ans
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *)
+        echo "aborted"
+        exit 1
+        ;;
+    esac
+
+    echo "==> delete instance: $NAME"
+    aws lightsail delete-instance --instance-name "$NAME"
+    ;;
+
+  # -----------------------------
+  # bundles（見やすく）
+  # -----------------------------
+  get)
+    aws lightsail get-bundles \
+      --query "bundles[].{ID:bundleId,Name:name,CPU:cpuCount,MemGB:ramSizeInGb,DiskGB:diskSizeInGb,PriceUSD:price}" \
+      --output table
+    ;;
+
+  # -----------------------------
+  # blueprints（見やすく）
+  # -----------------------------
+  blue)
+    aws lightsail get-blueprints \
+      --query "blueprints[].{ID:blueprintId,Name:name,OS:platform,Version:version}" \
+      --output table
+    ;;
+
+  # -----------------------------
+  # instances list
+  # -----------------------------
+  ls)
+    aws lightsail get-instances \
+      --query "instances[].{Name:name,State:state.name,IP:publicIpAddress,Type:bundleId,AZ:location.availabilityZone}" \
+      --output table
+    ;;
+
+  # -----------------------------
+  # ssh
+  # -----------------------------
+  ssh)
+    NAME="$1"
+    if [ -z "$NAME" ]; then
+      echo "Usage: awst lightsail ssh <name>"
+      exit 1
+    fi
+
+    IP=$(aws lightsail get-instance \
+      --instance-name "$NAME" \
+      --query "instance.publicIpAddress" \
+      --output text)
+
+    exec ssh root@"$IP"
+    ;;
+
+  # -----------------------------
+  # default SSH key (名前 + ローカルpemパス)
+  # -----------------------------
+  default-key)
+    aws lightsail download-default-key-pair  --query privateKeyBase64  --output text
+    ;;
+
+  # -----------------------------
+  # help
+  # -----------------------------
+  help|"")
+    cat <<EOF
+awst lightsail <subcommand>
+
+subcommands:
+  create <name>   create instance + static ip
+  delete <name>   delete instance (static IP は残す)
+  get             list bundles
+  blue            list blueprints
+  ls              list instances
+  ssh <name>      ssh into instance
+  default-key     print default SSH key name and ~/.ssh/<name>.pem (AWST_KEY, default sshpub)
+EOF
+    ;;
+
+  *)
+    echo "unknown subcommand: $sub"
+    exit 1
+    ;;
+esac

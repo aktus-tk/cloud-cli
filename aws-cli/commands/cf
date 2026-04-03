@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst cf <command> [args]
+
+read-only CloudFront inspection
+
+commands:
+  ls                    distributions: Id, DomainName, Status, Aliases (count)
+  domain <id>           alternate domain names (CNAMEs)
+  origin <id>           origins: Id, Domain, Path, Protocol (custom policy or S3)
+  behavior <id>         default cache behavior + cache behaviors
+  help                  this help
+
+examples:
+  awst cf ls
+  awst cf domain E1234567890ABC
+EOF
+}
+
+cf_ls() {
+  aws cloudfront list-distributions --output json | jq -r '
+    (["Id", "DomainName", "Status", "Aliases"] | @tsv),
+    ((.DistributionList.Items // [])[]
+      | [
+          .Id,
+          .DomainName,
+          .Status,
+          (.Aliases.Items // [] | length | tostring)
+        ]
+      | @tsv)
+  ' | column -t -s $'\t'
+}
+
+cf_domain() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    echo "Usage: awst cf domain <distribution-id>" >&2
+    exit 1
+  fi
+  local items
+  items="$(aws cloudfront get-distribution --id "$id" --output json \
+    | jq '.Distribution.DistributionConfig.Aliases.Items // []')"
+  local n
+  n="$(echo "$items" | jq 'length')"
+  if [[ "$n" -eq 0 ]]; then
+    echo "(no alternate domain names)"
+    return 0
+  fi
+  echo "DomainName"
+  echo "----------"
+  echo "$items" | jq -r '.[]'
+}
+
+cf_origin() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    echo "Usage: awst cf origin <distribution-id>" >&2
+    exit 1
+  fi
+  aws cloudfront get-distribution --id "$id" --output json | jq -r '
+    (["Id", "Domain", "Path", "Protocol"] | @tsv),
+    (.Distribution.DistributionConfig.Origins.Items[]
+      | [
+          .Id,
+          .DomainName,
+          (.OriginPath // ""),
+          (if .CustomOriginConfig != null
+            then .CustomOriginConfig.OriginProtocolPolicy
+            else "S3" end)
+        ]
+      | @tsv)
+  ' | column -t -s $'\t'
+}
+
+cf_behavior() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    echo "Usage: awst cf behavior <distribution-id>" >&2
+    exit 1
+  fi
+  aws cloudfront get-distribution --id "$id" --output json | jq -r '
+    .Distribution.DistributionConfig as $c |
+    (["Path", "Origin", "Protocol", "CachePolicy"] | @tsv),
+    (([$c.DefaultCacheBehavior] + ($c.CacheBehaviors.Items // []))[]
+      | [
+          (.PathPattern // "default"),
+          .TargetOriginId,
+          .ViewerProtocolPolicy,
+          (.CachePolicyId // "-")
+        ]
+      | @tsv)
+  ' | column -t -s $'\t'
+}
+
+case "$sub" in
+  ls|list)
+    cf_ls
+    ;;
+  domain)
+    cf_domain "${1:-}"
+    ;;
+  origin)
+    cf_origin "${1:-}"
+    ;;
+  behavior)
+    cf_behavior "${1:-}"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown cf command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
