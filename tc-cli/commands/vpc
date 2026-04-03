@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+
+sg_ls () {
+#for sg in `tccli vpc DescribeSecurityGroups --filter  SecurityGroupSet[].SecurityGroupId --output text`; do
+tccli vpc DescribeSecurityGroups --filter  SecurityGroupSet[].[SecurityGroupId,SecurityGroupName] --output text | while read sg name; do
+  JSON=`tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId $sg`
+  echo $JSON | jq --arg sg $sg --arg name $name -r '.SecurityGroupPolicySet | .Egress[] | [$sg, $name, "Egress", .PolicyDescription, .Protocol, .Port, .CidrBlock, .Action ]| @csv '
+  echo $JSON | jq --arg sg $sg --arg name $name -r '.SecurityGroupPolicySet | .Ingress[] | [$sg, $name, "Ingress", .PolicyDescription, .Protocol, .Port, .CidrBlock, .Action ]| @csv '
+done
+
+}
+
+
+case "$cmd" in
+  sg)
+    sg_ls
+    #teo_describe_rules "$@"
+    ;;
+  help|-h|--help|"")
+    echo
+    echo "Examples:"
+    echo "  tcclit vpc sg"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit teo help" >&2
+    exit 1
+    ;;
+esac
+

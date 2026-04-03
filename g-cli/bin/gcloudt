@@ -9,7 +9,7 @@ COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
-  echo "usage: awst <command>"
+  echo "usage: gcloudt <command>"
   echo
   echo "available commands:"
   ls "$COMMANDS"

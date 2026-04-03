@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 
-BASE="$HOME/tools/tc-cli"
+if [[ -L "$0" ]]; then
+  _bin="$(dirname "$(readlink -f "$0")")"
+else
+  _bin="$(dirname "$0")"
+fi
+COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
   echo "usage: tcclit <command>"
   echo
   echo "available commands:"
-  ls "$BASE/commands"
+  ls "$COMMANDS"
   exit 1
 fi
 
 shift
 
-COMMAND="$BASE/commands/$CMD"
+COMMAND="$COMMANDS/$CMD"
 
 if [[ ! -x "$COMMAND" ]]; then
   echo "unknown command: $CMD"

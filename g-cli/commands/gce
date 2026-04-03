@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift
+
+gce_ls_csv () {
+  declare -A type_map
+  declare -A shared_cpu_map=([e2-micro]=0.25 [e2-small]=0.5 [e2-medium]=1.0)
+
+  # マシンタイプ情報の取得
+  machine_types=$(gcloud compute instances list --format="value(machineType.basename())" | sort | uniq)
+  for mt in $machine_types; do
+    if [[ $mt == custom* ]]; then
+      vcpu=$(echo $mt | cut -d'-' -f2); mem_gb=$(echo $mt | cut -d'-' -f3)
+      type_map["$mt"]="$vcpu,$((mem_gb * 1024))"
+    else
+      cpumem=($(gcloud compute machine-types describe "$mt" --zone=asia-northeast1-c --format="value(guestCpus,memoryMb)"))
+      vcpu=${cpumem[0]}; mem=${cpumem[1]}
+      [[ -n "${shared_cpu_map[$mt]}" ]] && vcpu="${shared_cpu_map[$mt]}"
+      type_map["$mt"]="${vcpu},${mem}"
+    fi
+  done
+
+  # ヘッダー出力
+  echo '"index","name","status","machine_type","zone","internal_ip","external_ip","vcpu","mem","tags"'
+
+  index=1
+  # gcloudからCSV形式で取得（tags.list()などは自動でクォートされるが、一貫性のため手動で制御）
+  gcloud compute instances list --format="csv[no-heading](name,status,machineType.basename(),zone.scope(),networkInterfaces[0].networkIP,networkInterfaces[0].accessConfigs[0].natIP,tags.list())" |
+  sort -t',' -k5 -V |
+  while IFS=',' read -r name status machine_type zone ip_int ip_ext tags; do
+
+    vcpu_mem="${type_map[$machine_type]}"
+    IFS=',' read -r v_val m_val <<< "${vcpu_mem}"
+
+    # すべての項目をダブルクォートで囲む
+    # tagsはgcloud側ですでにクォートされている可能性があるため、
+    # 二重クォートにならないよう、一旦生データとして扱い、ここで改めて囲む
+    clean_tags=$(echo "$tags" | sed 's/^"//;s/"$//')
+
+    printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+      "$index" \
+      "$name" \
+      "$status" \
+      "$machine_type" \
+      "$zone" \
+      "$ip_int" \
+      "${ip_ext:-}" \
+      "$v_val" \
+      "$m_val" \
+      "$clean_tags"
+
+    ((index++))
+  done
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      gce_ls_csv 
+    else
+      gce_ls_csv | sed 's/","/\t/g; s/^"//; s/"$//' | column -t -s $'\t'
+    fi
+  ;;
+  #start) aws gce start-instances --instance-ids $(gce_get_id "$1") ;;
+  #stop)  aws gce  stop-instances --instance-ids $(gce_get_id "$1") ;;
+  *)
+    echo "gce commands:"
+    echo "  ls         list instances"
+    echo "  ls --csv   list instances as csv"
+    echo "  start NAME"
+    echo "  stop NAME"
+  ;;
+esac
