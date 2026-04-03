@@ -63,12 +63,36 @@ case "$cmd" in
       gce_ls_csv | sed 's/","/\t/g; s/^"//; s/"$//' | column -t -s $'\t'
     fi
   ;;
+  images)
+  gcloud compute images list --no-standard-images --format="table(name, creationTimestamp, sourceDisk, status, archiveSizeGb)"
+  ;;
+  templates)
+    gcloud compute instance-templates list "$@"
+  ;;
+  template)
+    if [[ -z "$1" ]]; then
+      echo "usage: gcloudt gce template INSTANCE_TEMPLATE_NAME [gcloud describe options...]"
+      exit 1
+    fi
+    gcloud compute instance-templates describe "$@"
+    ;;
+  groups)
+  gcloud compute instance-groups list
+  ;;
+  managed-group)
+  gcloud compute instance-groups managed list-instances  --region=asia-northeast1 "$@"
+  ;;
   #start) aws gce start-instances --instance-ids $(gce_get_id "$1") ;;
   #stop)  aws gce  stop-instances --instance-ids $(gce_get_id "$1") ;;
   *)
     echo "gce commands:"
     echo "  ls         list instances"
     echo "  ls --csv   list instances as csv"
+    echo "  images     list images"
+    echo "  templates  list instance templates"
+    echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"
+    echo "  groups     instance-groups list"
+    echo "  managed-group NAME [opts]   instance-groups managed list-instances"
     echo "  start NAME"
     echo "  stop NAME"
   ;;
