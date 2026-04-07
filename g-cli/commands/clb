@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift
+
+# forwarding-rules と関連リソースを取得してツリー表示
+clb_info() {
+  local name=$1
+  if [[ -z "$name" ]]; then
+    echo "usage: gcloudt clb info [NAME]"
+    exit 1
+  fi
+
+  # forwarding-rule の情報取得（global/regional 両方試す）
+  local fr_info
+  fr_info=$(gcloud compute forwarding-rules describe "$name" --global --format=json 2>/dev/null) || \
+  fr_info=$(gcloud compute forwarding-rules describe "$name" --region=asia-northeast1 --format=json 2>/dev/null) || {
+    echo "Forwarding rule '$name' not found"
+    exit 1
+  }
+
+  local ip_address=$(echo "$fr_info" | jq -r '.IPAddress // empty')
+  local port_range=$(echo "$fr_info" | jq -r '.portRange // empty')
+  local target=$(echo "$fr_info" | jq -r '.target // empty')
+  local lb_scheme=$(echo "$fr_info" | jq -r '.loadBalancingScheme // "EXTERNAL"')
+
+  echo "Load Balancer: $name"
+  echo "├─ IP Address: $ip_address"
+  echo "├─ Port Range: $port_range"
+  echo "├─ Scheme: $lb_scheme"
+  echo "└─ Target Chain:"
+
+  if [[ -z "$target" ]]; then
+    echo "   └─ (no target)"
+    return
+  fi
+
+  # target の種類を判別（target-http-proxy, target-https-proxy など）
+  local target_name=$(basename "$target")
+  local target_type=""
+
+  if [[ "$target" == *"targetHttpProxies"* ]]; then
+    target_type="target-http-proxies"
+  elif [[ "$target" == *"targetHttpsProxies"* ]]; then
+    target_type="target-https-proxies"
+  elif [[ "$target" == *"targetSslProxies"* ]]; then
+    target_type="target-ssl-proxies"
+  elif [[ "$target" == *"targetTcpProxies"* ]]; then
+    target_type="target-tcp-proxies"
+  else
+    echo "   └─ $target (unknown type)"
+    return
+  fi
+
+  echo "   ├─ Target Proxy: $target_name ($target_type)"
+
+  # プロキシの情報取得
+  local proxy_info
+  if [[ "$target_type" == "target-http-proxies" ]]; then
+    proxy_info=$(gcloud compute target-http-proxies describe "$target_name" --global --format=json 2>/dev/null || echo "{}")
+  elif [[ "$target_type" == "target-https-proxies" ]]; then
+    proxy_info=$(gcloud compute target-https-proxies describe "$target_name" --global --format=json 2>/dev/null || echo "{}")
+  elif [[ "$target_type" == "target-ssl-proxies" ]]; then
+    proxy_info=$(gcloud compute target-ssl-proxies describe "$target_name" --global --format=json 2>/dev/null || echo "{}")
+  elif [[ "$target_type" == "target-tcp-proxies" ]]; then
+    proxy_info=$(gcloud compute target-tcp-proxies describe "$target_name" --global --format=json 2>/dev/null || echo "{}")
+  fi
+
+  local url_map=$(echo "$proxy_info" | jq -r '.urlMap // .service // empty')
+
+  if [[ -z "$url_map" ]]; then
+    echo "   └─ (no url-map or backend-service)"
+    return
+  fi
+
+  local url_map_name=$(basename "$url_map")
+
+  # URL Map がある場合（HTTP/HTTPS LB）
+  if [[ "$url_map" == *"urlMaps"* ]]; then
+    echo "   │  └─ URL Map: $url_map_name"
+
+    # URL Map の情報取得
+    local urlmap_info=$(gcloud compute url-maps describe "$url_map_name" --global --format=json 2>/dev/null || echo "{}")
+    local default_service=$(echo "$urlmap_info" | jq -r '.defaultService // empty')
+
+    if [[ -n "$default_service" ]]; then
+      local backend_name=$(basename "$default_service")
+      echo "   │     └─ Default Backend Service: $backend_name"
+
+      # バックエンドサービスの詳細取得
+      show_backend_service "$backend_name" "   │        "
+    fi
+  else
+    # 直接 backend-service を参照している場合（SSL/TCP LB）
+    local backend_name=$(basename "$url_map")
+    echo "   │  └─ Backend Service: $backend_name"
+    show_backend_service "$backend_name" "   │     "
+  fi
+}
+
+# バックエンドサービスとその配下を表示
+show_backend_service() {
+  local backend_name=$1
+  local indent=$2
+
+  local backend_info=$(gcloud compute backend-services describe "$backend_name" --global --format=json 2>/dev/null || \
+                       gcloud compute backend-services describe "$backend_name" --region=asia-northeast1 --format=json 2>/dev/null || \
+                       echo "{}")
+
+  local protocol=$(echo "$backend_info" | jq -r '.protocol // empty')
+  local backends=$(echo "$backend_info" | jq -c '.backends[]? // empty')
+
+  if [[ -n "$protocol" ]]; then
+    echo "${indent}Protocol: $protocol"
+  fi
+
+  if [[ -z "$backends" ]]; then
+    echo "${indent}└─ (no backends)"
+    return
+  fi
+
+  echo "${indent}Backends:"
+  echo "$backends" | while IFS= read -r backend; do
+    local group=$(echo "$backend" | jq -r '.group // empty')
+    local balancing_mode=$(echo "$backend" | jq -r '.balancingMode // empty')
+
+    if [[ -n "$group" ]]; then
+      local group_name=$(basename "$group")
+      echo "${indent}└─ Instance Group: $group_name"
+      echo "${indent}   └─ Balancing Mode: $balancing_mode"
+    fi
+  done
+}
+
+# forwarding-rules の一覧表示
+clb_ls() {
+  echo "NAME,IP,PORT,TARGET_TYPE,URL_MAP,SCHEME"
+
+  # Global forwarding rules
+  gcloud compute forwarding-rules list --global --format=json 2>/dev/null | \
+  jq -r '.[] | [.name, .IPAddress, .portRange, (.target | split("/")[-2]), "", .loadBalancingScheme] | @csv' | \
+  while IFS=',' read -r name ip port target_type _ scheme; do
+    # クォート除去
+    name=${name//\"/}; ip=${ip//\"/}; port=${port//\"/}; target_type=${target_type//\"/}; scheme=${scheme//\"/}
+
+    # target-proxy から url-map を取得
+    local url_map=""
+    if [[ "$target_type" == "targetHttpProxies" ]]; then
+      local proxy_name=$(gcloud compute forwarding-rules describe "$name" --global --format="value(target.basename())")
+      url_map=$(gcloud compute target-http-proxies describe "$proxy_name" --global --format="value(urlMap.basename())" 2>/dev/null || echo "")
+    elif [[ "$target_type" == "targetHttpsProxies" ]]; then
+      local proxy_name=$(gcloud compute forwarding-rules describe "$name" --global --format="value(target.basename())")
+      url_map=$(gcloud compute target-https-proxies describe "$proxy_name" --global --format="value(urlMap.basename())" 2>/dev/null || echo "")
+    fi
+
+    echo "$name,$ip,$port,$target_type,$url_map,$scheme"
+  done
+
+  # Regional forwarding rules（必要に応じてリージョンを追加）
+  gcloud compute forwarding-rules list --filter="region:asia-northeast1" --format=json 2>/dev/null | \
+  jq -r '.[] | [.name, .IPAddress, .portRange, (.target | split("/")[-2]), "", .loadBalancingScheme] | @csv' | \
+  while IFS=',' read -r name ip port target_type _ scheme; do
+    name=${name//\"/}; ip=${ip//\"/}; port=${port//\"/}; target_type=${target_type//\"/}; scheme=${scheme//\"/}
+    echo "$name,$ip,$port,$target_type,,$scheme"
+  done
+}
+
+# IP アドレスのみ表示
+clb_ip() {
+  echo "NAME,IP_ADDRESS"
+
+  # Global
+  gcloud compute forwarding-rules list --global --format="csv[no-heading](name,IPAddress)" 2>/dev/null
+
+  # Regional
+  gcloud compute forwarding-rules list --filter="region:asia-northeast1" --format="csv[no-heading](name,IPAddress)" 2>/dev/null
+}
+
+# Certificate Manager: gcloud certificate-manager maps list
+clb_cert_maps() {
+  gcloud certificate-manager maps list "$@"
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      clb_ls
+    else
+      clb_ls | column -t -s ','
+    fi
+    ;;
+  info)
+    clb_info "$1"
+    ;;
+  ip)
+    if [[ "$1" == "--csv" ]]; then
+      clb_ip
+    else
+      clb_ip | column -t -s ','
+    fi
+    ;;
+  cert-maps)
+    if [[ "$1" == "--csv" ]]; then
+      shift
+      clb_cert_maps --format=csv "$@"
+    else
+      clb_cert_maps "$@"
+    fi
+    ;;
+  cert-map-entries)
+    extra=()
+    if [[ "$1" == "--csv" ]]; then
+      shift
+      extra=(--format=csv)
+    fi
+    map=$1
+    shift || true
+    if [[ -z "$map" ]]; then
+      echo "usage: gcloudt clb cert-map-entries [--csv] MAP_NAME [gcloud options...]"
+      exit 1
+    fi
+    gcloud certificate-manager maps entries list --map="$map" "${extra[@]}" "$@"
+    ;;
+  help|*)
+    echo "clb (Cloud Load Balancer) commands:"
+    echo "  ls           list load balancers (forwarding-rules + target-proxy + url-map)"
+    echo "  ls --csv     list as CSV"
+    echo "  info [NAME]  show detailed tree from IP to backend instances"
+    echo "  ip           show IP addresses only"
+    echo "  ip --csv     show IP addresses as CSV"
+    echo "  cert-maps [--csv] [gcloud options...]  Certificate Manager maps (gcloud certificate-manager maps list)"
+    echo "  cert-map-entries [--csv] MAP [opts...]  map entries (gcloud certificate-manager maps entries list --map=MAP)"
+    ;;
+esac
