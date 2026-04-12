@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+firewall_ls_csv() {
+  echo "Name,Network,Direction,Priority,SourceRanges,SourceTags,TargetTags,AllowedRules,DeniedRules,Disabled"
+  gcloud compute firewall-rules list \
+    --format="csv[no-heading](name,network.basename(),direction,priority,sourceRanges.list(separator=';'),sourceTags.list(separator=';'),targetTags.list(separator=';'),allowed[].map().firewall_rule().list(separator=';'),denied[].map().firewall_rule().list(separator=';'),disabled)"
+}
+
+firewall_show() {
+  local rule_name=$1
+  if [[ -z "$rule_name" ]]; then
+    echo "usage: gcloudt firewall show RULE_NAME" >&2
+    exit 1
+  fi
+
+  echo "Firewall Rule: $rule_name"
+  echo "================================================================"
+
+  gcloud compute firewall-rules describe "$rule_name" --format=json | jq -r '
+    def format_rules:
+      if type == "array" then
+        map(
+          if .IPProtocol == "tcp" or .IPProtocol == "udp" then
+            if .ports then
+              .IPProtocol + ":" + (.ports | join(","))
+            else
+              .IPProtocol + ":all"
+            end
+          else
+            .IPProtocol
+          end
+        ) | join("; ")
+      else
+        "N/A"
+      end;
+
+    [
+      "Name: \(.name)",
+      "Network: \(.network | split("/") | .[-1])",
+      "Direction: \(.direction)",
+      "Priority: \(.priority)",
+      "Disabled: \(.disabled // false)",
+      "",
+      "Source/Target Configuration:",
+      "  SourceRanges: \(.sourceRanges // [] | join(", "))",
+      "  SourceTags: \(.sourceTags // [] | join(", "))",
+      "  TargetTags: \(.targetTags // [] | join(", "))",
+      "",
+      "Allowed Rules:",
+      if .allowed then
+        (.allowed | map("  - \(format_rules)") | join("\n"))
+      else
+        "  (none)"
+      end,
+      "",
+      "Denied Rules:",
+      if .denied then
+        (.denied | map("  - \(format_rules)") | join("\n"))
+      else
+        "  (none)"
+      end
+    ] | join("\n")
+  '
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      firewall_ls_csv
+    else
+      firewall_ls_csv | column -t -s ','
+    fi
+    ;;
+  show)
+    firewall_show "$1"
+    ;;
+  help|-h|--help|"")
+    echo "firewall commands:"
+    echo "  ls              list firewall rules (table format)"
+    echo "  ls --csv        list firewall rules (CSV format)"
+    echo "  show RULE_NAME  show detailed rule configuration"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcloudt firewall help" >&2
+    exit 1
+    ;;
+esac
