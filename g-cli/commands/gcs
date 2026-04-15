@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+gcs_buckets_csv() {
+  echo "Name,Location,StorageClass,CreationTime"
+  gcloud storage buckets list --format="csv[no-heading](name,location,storageClass,timeCreated)"
+}
+
+gcs_objects_csv() {
+  local bucket=$1
+  echo "Name,Size,LastModified"
+  gsutil ls -lh -r "gs://${bucket}/" 2>/dev/null | grep -v ':$' | grep -v '^TOTAL' | awk -v bucket="${bucket}" '{
+    name = $4
+    gsub("^gs://" bucket "/", "", name)
+    size = $1" "$2
+    time = $3
+    print name","size","time
+  }'
+}
+
+case "$cmd" in
+  ls)
+    if [[ -z "$1" ]]; then
+      # バケット一覧表示
+      gcs_buckets_csv | column -t -s ','
+    elif [[ "$1" == "--csv" ]]; then
+      # バケット一覧（CSV形式）
+      gcs_buckets_csv
+    else
+      # 指定バケット内のオブジェクト一覧表示
+      bucket=$1
+      format=${2:-"table"}
+      if [[ "$format" == "--csv" ]]; then
+        gcs_objects_csv "$bucket"
+      else
+        gcs_objects_csv "$bucket" | column -t -s ','
+      fi
+    fi
+    ;;
+  help|-h|--help|"")
+    echo "gcs (google cloud storage) commands:"
+    echo "  ls                     list buckets (table format)"
+    echo "  ls --csv               list buckets (CSV format)"
+    echo "  ls BUCKET_NAME         list objects in bucket (table format)"
+    echo "  ls BUCKET_NAME --csv   list objects in bucket (CSV format)"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcloudt gcs help" >&2
+    exit 1
+    ;;
+esac

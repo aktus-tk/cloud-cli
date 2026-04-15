@@ -25,7 +25,10 @@ cloud-cli/
 │   │   └── gcloudt   # メインエントリーポイント
 │   └── commands/
 │       ├── gce       # Compute Engine インスタンス操作
-│       └── firewall  # VPC Firewall ルール表示
+│       ├── firewall  # VPC Firewall ルール表示
+│       ├── sa        # Service Account 表示
+│       ├── gcs       # Cloud Storage バケット表示
+│       └── clb       # Cloud Load Balancer
 │
 └── tc-cli/          # Tencent Cloud CLI ヘルパー
     ├── bin/
@@ -99,14 +102,24 @@ awst r53 ...            # Route 53 操作
 ### GCP CLI (`gcloudt`)
 
 ```bash
-gcloudt gce ls                   # Compute Engine インスタンス一覧
-gcloudt gce ls --csv             # CSV 形式で出力
-gcloudt gce images               # イメージ一覧
-gcloudt gce templates            # インスタンステンプレート一覧
+gcloudt gce ls                      # Compute Engine インスタンス一覧
+gcloudt gce ls --csv                # CSV 形式で出力
+gcloudt gce show INSTANCE_NAME      # インスタンス詳細情報（SA、ボリューム）
+gcloudt gce images                  # イメージ一覧
+gcloudt gce templates               # インスタンステンプレート一覧
 
-gcloudt firewall ls              # VPC Firewall ルール一覧
-gcloudt firewall ls --csv        # CSV 形式で出力
-gcloudt firewall show RULE_NAME  # 詳細ルール表示
+gcloudt firewall ls                 # VPC Firewall ルール一覧
+gcloudt firewall ls --csv           # CSV 形式で出力
+gcloudt firewall show RULE_NAME     # 詳細ルール表示
+
+gcloudt sa ls                       # Service Account 一覧
+gcloudt sa ls --csv                 # CSV 形式で出力
+gcloudt sa show EMAIL               # Service Account 詳細情報
+
+gcloudt gcs ls                          # Cloud Storage バケット一覧
+gcloudt gcs ls --csv                    # CSV 形式で出力
+gcloudt gcs ls BUCKET_NAME              # バケット内のオブジェクト一覧
+gcloudt gcs ls BUCKET_NAME --csv        # オブジェクト一覧（CSV形式）
 ```
 
 ### Tencent Cloud CLI (`tcclit`)
@@ -139,7 +152,8 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 
 ### GCP GCE (`g-cli/commands/gce`)
 
-- **ls**: Compute Engine インスタンス一覧（CSV/テーブル）
+- **ls**: Compute Engine インスタンス一覧（テーブル/CSV）
+- **show NAME**: インスタンス詳細情報（Service Account、ボリューム、ネットワーク、タグ、ラベル）
 - **images**: イメージ一覧
 - **templates**: インスタンステンプレート一覧
 - **groups**: インスタンスグループ一覧
@@ -149,6 +163,17 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 
 - **ls**: VPC Firewall ルール一覧（テーブル/CSV）
 - **show NAME**: 指定ルールの詳細表示（allowed/denied ルール展開）
+
+### GCP Service Account (`g-cli/commands/sa`)
+
+- **ls**: Service Account 一覧（テーブル/CSV）
+- **show EMAIL**: Service Account 詳細情報（メール、Display Name、関連キー情報）
+
+### GCP Cloud Storage (`g-cli/commands/gcs`)
+
+- **ls**: バケット一覧（テーブル/CSV）
+- **ls BUCKET_NAME**: 指定バケット内のオブジェクト一覧（テーブル/CSV）
+- **Helper**: `gcs_buckets_csv()` でバケット情報を取得、`gcs_objects_csv()` でオブジェクト情報を取得
 
 ### Tencent Cloud CVM (`tc-cli/commands/cvm`)
 

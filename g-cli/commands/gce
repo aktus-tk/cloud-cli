@@ -55,13 +55,90 @@ gce_ls_csv () {
   done
 }
 
+gce_show() {
+  local instance_name=$1
+  if [[ -z "$instance_name" ]]; then
+    echo "usage: gcloudt gce show INSTANCE_NAME" >&2
+    exit 1
+  fi
+
+  echo "Instance: $instance_name"
+  echo "================================================================"
+
+  gcloud compute instances describe "$instance_name" --format=json | jq -r '
+    [
+      "Name: \(.name)",
+      "Status: \(.status)",
+      "Zone: \(.zone | split("/") | .[-1])",
+      "Machine Type: \(.machineType | split("/") | .[-1])",
+      "Preemptible: \(.scheduling.preemptible // false)",
+      ""
+    ] +
+    (
+      if (.serviceAccounts // []) | length > 0 then
+        ["Service Accounts:"] + (.serviceAccounts[] | ["  Email: \(.email)"] + (.scopes[] | ["    - \(split("/") | .[-1])"]))
+      else
+        ["Service Accounts:", "  (none)"]
+      end
+    ) +
+    [""] +
+    (
+      [
+        "Network Interfaces:"
+      ] + (.networkInterfaces[] |
+        [
+          "  Network: \(.network | split("/") | .[-1])",
+          "  Subnet: \(.subnetwork | split("/") | .[-1])",
+          "  Internal IP: \(.networkIP)"
+        ] + (if (.accessConfigs // []) | length > 0 then
+          (.accessConfigs[] | ["  External IP: \(.natIP // "(ephemeral)")"])
+        else
+          ["  External IP: (none)"]
+        end)
+      )
+    ) +
+    [""] +
+    (
+      ["Disks:"] + (.disks | map(
+        [
+          "  Name: \(.source | split("/") | .[-1])",
+          "  Size: \(.diskSizeGb)GB",
+          "  Type: \(.type // "(standard)")",
+          "  Boot: \(.boot // false)"
+        ]
+      ) | flatten)
+    ) +
+    [""] +
+    (
+      if ((.tags.items // []) | length) > 0 then
+        ["Tags:"] + (.tags.items[] | ["  - \(.)"])
+      else
+        ["Tags:", "  (none)"]
+      end
+    ) +
+    [""] +
+    (
+      if (.labels | length // 0) > 0 then
+        ["Labels:"] + (.labels | to_entries[] | ["  \(.key): \(.value)"])
+      else
+        ["Labels:", "  (none)"]
+      end
+    ) +
+    ["", "Created: \(.creationTimestamp)"]
+    | join("\n")
+  '
+}
+
 case "$cmd" in
   ls)
     if [[ "$1" == "--csv" ]]; then
-      gce_ls_csv 
+      gce_ls_csv
     else
       gce_ls_csv | sed 's/","/\t/g; s/^"//; s/"$//' | column -t -s $'\t'
     fi
+  ;;
+  show)
+    gce_show "$1"
   ;;
   images)
   gcloud compute images list --no-standard-images --format="table(name, creationTimestamp, sourceDisk, status, archiveSizeGb)"
@@ -88,6 +165,7 @@ case "$cmd" in
     echo "gce commands:"
     echo "  ls         list instances"
     echo "  ls --csv   list instances as csv"
+    echo "  show NAME  show detailed instance information"
     echo "  images     list images"
     echo "  templates  list instance templates"
     echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"

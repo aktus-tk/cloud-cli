@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+sa_ls_csv() {
+  echo "Email,DisplayName,Disabled,ProjectId"
+  gcloud iam service-accounts list \
+    --format="csv[no-heading](email,displayName,disabled,projectId)"
+}
+
+sa_show() {
+  local sa_email=$1
+  if [[ -z "$sa_email" ]]; then
+    echo "usage: gcloudt sa show SERVICE_ACCOUNT_EMAIL" >&2
+    exit 1
+  fi
+
+  echo "Service Account: $sa_email"
+  echo "================================================================"
+  gcloud iam service-accounts describe "$sa_email" --format=json | jq -r '
+    [
+      "Email: \(.email)",
+      "Display Name: \(.displayName // \"(none)\")",
+      "Project ID: \(.projectId)",
+      "Account ID: \(.uniqueId)",
+      "Disabled: \(.disabled // false)",
+      "Created: \(.createTime // \"(none)\")"
+    ] | join("\n")
+  '
+  echo ""
+  echo "Keys:"
+  gcloud iam service-accounts keys list --iam-account="$sa_email" \
+    --format="table(name,validAfterTime,validBeforeTime,keyType)"
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      sa_ls_csv
+    else
+      sa_ls_csv | column -t -s ','
+    fi
+    ;;
+  show)
+    sa_show "$1"
+    ;;
+  help|-h|--help|"")
+    echo "sa (service-account) commands:"
+    echo "  ls              list service accounts (table format)"
+    echo "  ls --csv        list service accounts (CSV format)"
+    echo "  show EMAIL      show detailed service account information"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcloudt sa help" >&2
+    exit 1
+    ;;
+esac
