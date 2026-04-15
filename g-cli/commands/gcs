@@ -21,6 +21,57 @@ gcs_objects_csv() {
   }'
 }
 
+gcs_cp() {
+  local src=$1
+  local dst=$2
+
+  if [[ -z "$src" ]] || [[ -z "$dst" ]]; then
+    echo "usage: gcloudt gcs cp <source> <destination>" >&2
+    echo "  gcloudt gcs cp gs://BUCKET/OBJECT LOCAL_PATH     # pull (GCS → local)" >&2
+    echo "  gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT     # put (local → GCS)" >&2
+    exit 1
+  fi
+
+  # GCS パスかローカルパスかを判定
+  if [[ "$src" =~ ^gs:// ]]; then
+    # pull: GCS → ローカル
+    echo "Pulling: $src → $dst"
+    gsutil cp "$src" "$dst"
+  elif [[ "$dst" =~ ^gs:// ]]; then
+    # put: ローカル → GCS
+    echo "Pushing: $src → $dst"
+    gsutil cp "$src" "$dst"
+  else
+    echo "error: either source or destination must be a GCS path (gs://...)" >&2
+    exit 1
+  fi
+}
+
+gcs_rm() {
+  local path=$1
+
+  if [[ -z "$path" ]]; then
+    echo "usage: gcloudt gcs rm <GCS_PATH>" >&2
+    echo "  gcloudt gcs rm gs://BUCKET/OBJECT              # delete single object" >&2
+    echo "  gcloudt gcs rm gs://BUCKET/PREFIX/ -r          # delete recursively" >&2
+    exit 1
+  fi
+
+  if [[ ! "$path" =~ ^gs:// ]]; then
+    echo "error: path must be a GCS path (gs://...)" >&2
+    exit 1
+  fi
+
+  # 再帰オプションをチェック
+  if [[ "${2:-}" == "-r" ]] || [[ "${2:-}" == "--recursive" ]]; then
+    echo "Deleting recursively: $path"
+    gsutil -m rm -r "$path"
+  else
+    echo "Deleting: $path"
+    gsutil rm "$path"
+  fi
+}
+
 case "$cmd" in
   ls)
     if [[ -z "$1" ]]; then
@@ -40,12 +91,26 @@ case "$cmd" in
       fi
     fi
     ;;
+  cp)
+    gcs_cp "$@"
+    ;;
+  rm)
+    gcs_rm "$@"
+    ;;
   help|-h|--help|"")
     echo "gcs (google cloud storage) commands:"
-    echo "  ls                     list buckets (table format)"
-    echo "  ls --csv               list buckets (CSV format)"
-    echo "  ls BUCKET_NAME         list objects in bucket (table format)"
-    echo "  ls BUCKET_NAME --csv   list objects in bucket (CSV format)"
+    echo "  ls                                  list buckets (table format)"
+    echo "  ls --csv                            list buckets (CSV format)"
+    echo "  ls BUCKET_NAME                      list objects in bucket (table format)"
+    echo "  ls BUCKET_NAME --csv                list objects in bucket (CSV format)"
+    echo "  cp SRC DEST                         copy objects (pull or push)"
+    echo "    Example:"
+    echo "      gcloudt gcs cp gs://BUCKET/OBJECT LOCAL_PATH     # pull"
+    echo "      gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT     # push"
+    echo "  rm GCS_PATH [OPTIONS]               delete objects"
+    echo "    Example:"
+    echo "      gcloudt gcs rm gs://BUCKET/OBJECT                # delete single object"
+    echo "      gcloudt gcs rm gs://BUCKET/PREFIX/ -r            # delete recursively"
     ;;
   *)
     echo "unknown command: $cmd" >&2

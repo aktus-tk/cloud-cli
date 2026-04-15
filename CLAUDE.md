@@ -116,10 +116,16 @@ gcloudt sa ls                       # Service Account 一覧
 gcloudt sa ls --csv                 # CSV 形式で出力
 gcloudt sa show EMAIL               # Service Account 詳細情報
 
-gcloudt gcs ls                          # Cloud Storage バケット一覧
-gcloudt gcs ls --csv                    # CSV 形式で出力
-gcloudt gcs ls BUCKET_NAME              # バケット内のオブジェクト一覧
-gcloudt gcs ls BUCKET_NAME --csv        # オブジェクト一覧（CSV形式）
+gcloudt gcs ls                                      # Cloud Storage バケット一覧
+gcloudt gcs ls --csv                                # CSV 形式で出力
+gcloudt gcs ls BUCKET_NAME                         # バケット内のオブジェクト一覧
+gcloudt gcs ls BUCKET_NAME --csv                   # オブジェクト一覧（CSV形式）
+
+gcloudt gcs cp gs://BUCKET/OBJECT LOCAL_PATH      # オブジェクトをダウンロード（pull）
+gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT      # ローカルファイルをアップロード（push）
+
+gcloudt gcs rm gs://BUCKET/OBJECT                 # オブジェクトを削除
+gcloudt gcs rm gs://BUCKET/PREFIX/ -r             # プレフィックス配下を再帰削除
 ```
 
 ### Tencent Cloud CLI (`tcclit`)
@@ -173,6 +179,9 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 
 - **ls**: バケット一覧（テーブル/CSV）
 - **ls BUCKET_NAME**: 指定バケット内のオブジェクト一覧（テーブル/CSV）
+- **cp**: GCS オブジェクトのアップロード/ダウンロード（`gsutil cp` ラッパー）
+  - pull: `gcloudt gcs cp gs://BUCKET/OBJECT LOCAL_PATH`
+  - push: `gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT`
 - **Helper**: `gcs_buckets_csv()` でバケット情報を取得、`gcs_objects_csv()` でオブジェクト情報を取得
 
 ### Tencent Cloud CVM (`tc-cli/commands/cvm`)
