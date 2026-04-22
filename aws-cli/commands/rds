@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-help}"
+shift || true
+
+rds_instance_ls_tsv() {
+  local query
+  query='DBInstances[].[DBInstanceIdentifier,Engine,EngineVersion,DBInstanceClass,DBInstanceStatus,Endpoint.Address,Endpoint.Port,MultiAZ,AllocatedStorage,StorageType,AvailabilityZone]'
+  echo "DBInstanceIdentifier,Engine,EngineVersion,Class,Status,Address,Port,MultiAZ,AllocatedGB,StorageType,AZ"
+  aws rds describe-db-instances --query "$query" --output text "$@" | tr '\t' ','
+}
+
+rds_cluster_ls_tsv() {
+  local query
+  query='DBClusters[].[DBClusterIdentifier,Engine,EngineVersion,Status,Endpoint,ReaderEndpoint,MultiAZ]'
+  echo "DBClusterIdentifier,Engine,EngineVersion,Status,Endpoint,ReaderEndpoint,MultiAZ"
+  aws rds describe-db-clusters --query "$query" --output text "$@" | tr '\t' ','
+}
+
+usage() {
+  cat <<'EOF'
+usage: awst rds <command> [args]
+
+commands:
+  ls [--csv]              list DB instances (default: table, --csv: comma)
+  clusters [--csv]         list DB clusters (Aurora / multi-AZ cluster)
+  show ID [aws...]         describe-db-instances (raw gcloud-style passthrough on extra flags)
+  cluster ID [aws...]      describe-db-clusters
+  help                     this help
+
+examples:
+  awst rds ls
+  awst rds ls --csv --region ap-northeast-1
+  awst rds clusters
+  awst rds show mydb-1
+  awst rds cluster my-aurora-cluster
+EOF
+}
+
+case "$sub" in
+  ls|list)
+    csv=0
+    args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --csv) csv=1; shift ;;
+        *) args+=("$1"); shift ;;
+      esac
+    done
+    if [[ "$csv" -eq 1 ]]; then
+      rds_instance_ls_tsv "${args[@]}"
+    else
+      rds_instance_ls_tsv "${args[@]}" | column -s, -t
+    fi
+    ;;
+  clusters)
+    csv=0
+    args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --csv) csv=1; shift ;;
+        *) args+=("$1"); shift ;;
+      esac
+    done
+    if [[ "$csv" -eq 1 ]]; then
+      rds_cluster_ls_tsv "${args[@]}"
+    else
+      rds_cluster_ls_tsv "${args[@]}" | column -s, -t
+    fi
+    ;;
+  show|describe)
+    if [[ -z "${1:-}" ]]; then
+      echo "usage: awst rds show <db-instance-identifier> [aws rds options...]" >&2
+      exit 1
+    fi
+    id=$1
+    shift
+    aws rds describe-db-instances --db-instance-identifier "$id" "$@"
+    ;;
+  cluster)
+    if [[ -z "${1:-}" ]]; then
+      echo "usage: awst rds cluster <db-cluster-identifier> [aws rds options...]" >&2
+      exit 1
+    fi
+    id=$1
+    shift
+    aws rds describe-db-clusters --db-cluster-identifier "$id" "$@"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    echo "awst rds: unknown command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

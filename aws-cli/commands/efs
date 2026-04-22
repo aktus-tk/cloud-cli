@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-help}"
+shift || true
+
+usage() {
+  cat <<'EOF'
+usage: awst efs <command> [options pass-through to aws efs ...]
+
+EFS: usage/容量はファイルシステム単位。アクセスポイント単位の容量は出せない。
+
+commands:
+  ap, aps, access-points   list access points (file system, access point, root path)
+  fs, filesystems          list file systems (id, name, state, size bytes)
+  help                     this help
+
+examples:
+  awst efs ap
+  awst efs ap --file-system-id fs-0123456789abcdef0
+  awst efs ap --region ap-northeast-1
+  awst efs fs
+EOF
+}
+
+case "$sub" in
+  ap|aps|access-points)
+    aws efs describe-access-points \
+      --query 'AccessPoints[*].[FileSystemId, AccessPointId, RootDirectory.Path]' \
+      --output text \
+      "$@"
+    ;;
+  fs|filesystems)
+    aws efs describe-file-systems \
+      --query 'FileSystems[].[FileSystemId,Name,LifeCycleState,SizeInBytes.Value]' \
+      --output text \
+      "$@"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    echo "awst efs: unknown command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
