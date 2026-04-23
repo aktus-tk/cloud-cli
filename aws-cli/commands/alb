@@ -11,7 +11,7 @@ usage: awst alb <command> [args]
 flow visibility (ELBv2 / ALB)
 
 commands:
-  ls                           list ALBs (Name, DNS, Scheme, VpcId)
+  ls                           list ALBs (Name, DNS, Scheme, VpcId, SecurityGroups)
   listener <alb-name>          listeners: Port, Protocol, DefaultActions, Certificates
   tg <alb-name>                target groups attached to ALB
   health <tg-name>             target health for target group name
@@ -59,8 +59,8 @@ get_tg_arn_by_name() {
 }
 
 alb_ls() {
-  local query='LoadBalancers[].[LoadBalancerName,DNSName,Scheme,VpcId]'
-  echo -e "LoadBalancerName\tDNSName\tScheme\tVpcId"
+  local query='LoadBalancers[].[LoadBalancerName,DNSName,Scheme,VpcId,join(`,`,SecurityGroups)]'
+  echo -e "LoadBalancerName\tDNSName\tScheme\tVpcId\tSecurityGroups"
   aws elbv2 describe-load-balancers --query "$query" --output text | column -t -s $'\t'
 }
 

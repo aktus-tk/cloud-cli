@@ -96,6 +96,12 @@ awst ec2 ls              # インスタンス一覧を表示
 awst ec2 ls --csv       # CSV 形式で出力
 awst ec2 start NAME     # インスタンスを起動
 awst ec2 stop NAME      # インスタンスを停止
+
+awst alb ls              # ALB 一覧を表示（Security Groups 含む）
+awst alb listener NAME   # ALB のリスナー情報を表示
+awst alb tg NAME         # ALB のターゲットグループを表示
+awst alb health TG_NAME  # ターゲットグループのヘルスチェック結果
+
 awst r53 ...            # Route 53 操作
 ```
 
@@ -155,6 +161,16 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **start/stop**: インスタンス制御
 - **sg_rules**: セキュリティグループルール表示
 - **Helper**: `ec2_get_id()` でタグ/インスタンス名から ID を検索
+
+### AWS ALB (`aws-cli/commands/alb`)
+
+- **ls**: ALB 一覧（Name, DNS, Scheme, VpcId, SecurityGroups）
+  - Security Group が複数ある場合は `,` で連結して表示
+- **listener NAME**: 指定 ALB のリスナー情報（Port, Protocol, DefaultActions, Certificates）
+- **tg NAME**: 指定 ALB のターゲットグループ一覧（Name, Port, Protocol, HealthCheckPath）
+- **health TG_NAME**: ターゲットグループのヘルスチェック結果（TargetId, Port, State, Reason）
+- **rule LISTENER_ARN**: リスナーのルール詳細を表示
+- **Helper**: `get_alb_arn_by_name()` で ALB 名から ARN を取得、`get_tg_arn_by_name()` でターゲットグループ名から ARN を取得
 
 ### GCP GCE (`g-cli/commands/gce`)
 
