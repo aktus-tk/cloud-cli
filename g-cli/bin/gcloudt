@@ -5,11 +5,21 @@ if [[ -L "$0" ]]; then
 else
   _bin="$(dirname "$0")"
 fi
+
+_debug=0
+_args=()
+for _a in "$@"; do
+  if [[ "$_a" == "--debug" ]]; then _debug=1
+  else _args+=("$_a")
+  fi
+done
+set -- "${_args[@]}"
+
 COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
-  echo "usage: gcloudt <command>"
+  echo "usage: gcloudt [--debug] <command> ..."
   echo
   echo "available commands:"
   ls "$COMMANDS"
@@ -17,6 +27,19 @@ if [[ -z "$CMD" ]]; then
 fi
 
 shift
+
+if [[ "$_debug" -eq 1 ]]; then
+  export CLOUD_CLI_DEBUG=1
+  if ! _real="$(command -v gcloud)"; then
+    echo "gcloudt: gcloud not found on PATH (--debug needs resolved gcloud)" >&2
+    exit 1
+  fi
+  export CLOUD_CLI_REAL_GCLOUD="$_real"
+  if _gs="$(command -v gsutil 2>/dev/null)"; then
+    export CLOUD_CLI_REAL_GSUTIL="$_gs"
+  fi
+  export PATH="${_bin}/_shims:${PATH}"
+fi
 
 COMMAND="$COMMANDS/$CMD"
 

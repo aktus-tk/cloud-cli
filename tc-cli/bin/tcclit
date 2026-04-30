@@ -5,11 +5,21 @@ if [[ -L "$0" ]]; then
 else
   _bin="$(dirname "$0")"
 fi
+
+_debug=0
+_args=()
+for _a in "$@"; do
+  if [[ "$_a" == "--debug" ]]; then _debug=1
+  else _args+=("$_a")
+  fi
+done
+set -- "${_args[@]}"
+
 COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
-  echo "usage: tcclit <command>"
+  echo "usage: tcclit [--debug] <command> ..."
   echo
   echo "available commands:"
   ls "$COMMANDS"
@@ -17,6 +27,16 @@ if [[ -z "$CMD" ]]; then
 fi
 
 shift
+
+if [[ "$_debug" -eq 1 ]]; then
+  export CLOUD_CLI_DEBUG=1
+  if ! _real="$(command -v tccli)"; then
+    echo "tcclit: tccli not found on PATH (--debug needs resolved tccli)" >&2
+    exit 1
+  fi
+  export CLOUD_CLI_REAL_TCCLI="$_real"
+  export PATH="${_bin}/_shims:${PATH}"
+fi
 
 COMMAND="$COMMANDS/$CMD"
 

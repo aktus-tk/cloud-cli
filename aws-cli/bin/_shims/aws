@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+real="${CLOUD_CLI_REAL_AWS:?CLOUD_CLI_REAL_AWS not set}"
+if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+  printf 'debug:' >&2
+  printf ' %q' "$real" "$@" >&2
+  printf '\n' >&2
+fi
+exec "$real" "$@"
