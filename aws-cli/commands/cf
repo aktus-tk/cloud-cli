@@ -11,7 +11,7 @@ usage: awst cf <command> [args]
 read-only CloudFront inspection
 
 commands:
-  ls                    distributions: Id, DomainName, Status, Aliases (count)
+  ls                    distributions: Id, DomainName, Status, Aliases (count), OriginName
   domain <id>           alternate domain names (CNAMEs)
   origin <id>           origins: Id, Domain, Path, Protocol (custom policy or S3)
   behavior <id>         default cache behavior + cache behaviors
@@ -25,13 +25,14 @@ EOF
 
 cf_ls() {
   aws cloudfront list-distributions --output json | jq -r '
-    (["Id", "DomainName", "Status", "Aliases"] | @tsv),
+    (["Id", "DomainName", "Status", "Aliases", "OriginName"] | @tsv),
     ((.DistributionList.Items // [])[]
       | [
           .Id,
           .DomainName,
           .Status,
-          (.Aliases.Items // [] | length | tostring)
+          (.Aliases.Items // [] | length | tostring),
+          (.Origins.Items // [] | map(.Id) | join(","))
         ]
       | @tsv)
   ' | column -t -s $'\t'
@@ -86,13 +87,14 @@ cf_behavior() {
   fi
   aws cloudfront get-distribution --id "$id" --output json | jq -r '
     .Distribution.DistributionConfig as $c |
-    (["Path", "Origin", "Protocol", "CachePolicy"] | @tsv),
-    (([$c.DefaultCacheBehavior] + ($c.CacheBehaviors.Items // []))[]
+    (["Priority", "Path", "Origin", "CachePolicy", "OriginRequestPolicy"] | @tsv),
+    ((($c.CacheBehaviors.Items // [] | to_entries | map(.value + {Priority: (.key | tostring)})) + [$c.DefaultCacheBehavior + {Priority: "default"}])[]
       | [
+          .Priority,
           (.PathPattern // "default"),
           .TargetOriginId,
-          .ViewerProtocolPolicy,
-          (.CachePolicyId // "-")
+          (.CachePolicyId // "-"),
+          (.OriginRequestPolicyId // "-")
         ]
       | @tsv)
   ' | column -t -s $'\t'
