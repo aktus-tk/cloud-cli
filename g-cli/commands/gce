@@ -87,8 +87,21 @@ case "$cmd" in
   gcloud compute instance-groups list
   ;;
   managed-group)
-  gcloud compute instance-groups managed list-instances  --region=asia-northeast1 "$@"
-  ;;
+    mg_cmd=$1
+    shift || true
+    case "$mg_cmd" in
+      describe)
+        if [[ -z "$1" ]]; then
+          echo "usage: gcloudt gce managed-group describe NAME [gcloud describe options...]" >&2
+          exit 1
+        fi
+        gcloud compute instance-groups managed describe --region=asia-northeast1 "$@"
+        ;;
+      *)
+        gcloud compute instance-groups managed list-instances --region=asia-northeast1 "$mg_cmd" "$@"
+        ;;
+    esac
+    ;;
   #start) aws gce start-instances --instance-ids $(gce_get_id "$1") ;;
   #stop)  aws gce  stop-instances --instance-ids $(gce_get_id "$1") ;;
   *)
@@ -100,7 +113,8 @@ case "$cmd" in
     echo "  templates  list instance templates"
     echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"
     echo "  groups     instance-groups list"
-    echo "  managed-group NAME [opts]   instance-groups managed list-instances"
+    echo "  managed-group NAME [opts]        instance-groups managed list-instances"
+    echo "  managed-group describe NAME [opts]   instance-groups managed describe"
     echo "  start NAME"
     echo "  stop NAME"
   ;;

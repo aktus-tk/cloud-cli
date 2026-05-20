@@ -52,9 +52,81 @@ get_zone_id() {
   zones_list | awk -v z="$zone_name" '$1 == z {print $2}' | head -1
 }
 
+# zone_name must already end with a dot. record_name may be a label, @ (apex), or FQDN.
+r53_fqdn_record_name() {
+  local zone_name="$1" record_name="$2"
+  if [[ "$record_name" == "@" ]]; then
+    printf '%s' "$zone_name"
+    return
+  fi
+  if [[ "$record_name" != *. ]]; then
+    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
+      record_name="${record_name}.${zone_name%\.}"
+    fi
+  fi
+  [[ "$record_name" == *. ]] || record_name="${record_name}."
+  printf '%s' "$record_name"
+}
+
+# Parse MX create/update args into value + ttl.
+# Supports: MX <priority> <mail-host> [ttl]  or  MX "<priority> <mail-host>" [ttl]
+r53_mx_value_and_ttl() {
+  local type="$1"
+  shift
+
+  if [[ "$(printf '%s' "$type" | tr '[:lower:]' '[:upper:]')" != "MX" ]]; then
+    echo "r53_mx_value_and_ttl: internal error (not MX)" >&2
+    exit 1
+  fi
+
+  local priority mailhost combined ttl
+  if [[ $# -ge 2 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
+    priority="$1"
+    mailhost="$2"
+    shift 2
+    if [[ $# -ge 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
+      ttl="$1"
+    else
+      ttl=300
+    fi
+    [[ "$mailhost" == *. ]] || mailhost="${mailhost}."
+    printf '%s' "$priority $mailhost"$'\t'"$ttl"
+    return
+  fi
+
+  combined="$1"
+  shift || true
+  ttl="${1:-300}"
+  if [[ -z "$combined" ]]; then
+    echo ""$'\t'""
+    return
+  fi
+  printf '%s' "$combined"$'\t'"$ttl"
+}
+
 # Create a new resource record
 create_record() {
-  local zone_name="$1" record_name="$2" type="$3" value="$4" ttl="${5:-300}"
+  local zone_name="$1" record_name="$2" type="$3"
+  local value ttl quoted_value
+
+  type=$(printf '%s' "$type" | tr '[:lower:]' '[:upper:]')
+
+  if [[ "${type}" == "MX" ]]; then
+    shift 3
+    local mx_parsed
+    mx_parsed=$(r53_mx_value_and_ttl MX "$@")
+    value="${mx_parsed%%$'\t'*}"
+    ttl="${mx_parsed#*$'\t'}"
+    if [[ -z "$value" ]]; then
+      echo "Usage: awst r53 create <zone-name> <record-name> MX <priority> <mail-host> [ttl]" >&2
+      echo "     : awst r53 create <zone-name> <record-name> MX \"<priority> <mail-host>\" [ttl]" >&2
+      echo "Example: awst r53 create example.com @ MX 10 mail.example.com. 300" >&2
+      exit 1
+    fi
+  else
+    value="$4"
+    ttl="${5:-300}"
+  fi
 
   if [[ -z "$zone_name" ]] || [[ -z "$record_name" ]] || [[ -z "$type" ]] || [[ -z "$value" ]]; then
     echo "Usage: awst r53 create <zone-name> <record-name> <type> <value> [ttl]" >&2
@@ -65,14 +137,7 @@ create_record() {
   # Add trailing dot if not present
   [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
 
-  # Auto-append zone name if record_name is not fully qualified
-  if [[ "$record_name" != *. ]]; then
-    # Check if record_name already contains zone name
-    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
-      record_name="${record_name}.${zone_name%\.}"
-    fi
-  fi
-  [[ "$record_name" == *. ]] || record_name="${record_name}."
+  record_name=$(r53_fqdn_record_name "$zone_name" "$record_name")
 
   local zone_id
   zone_id=$(get_zone_id "$zone_name")
@@ -83,7 +148,7 @@ create_record() {
 
   # Create change batch JSON using jq for proper escaping
   # For TXT records, AWS requires the value to be enclosed in quotes
-  local quoted_value="$value"
+  quoted_value="$value"
   if [[ "$type" == "TXT" ]]; then
     quoted_value="\"$value\""
   fi
@@ -115,7 +180,26 @@ create_record() {
 
 # Update an existing resource record
 update_record() {
-  local zone_name="$1" record_name="$2" type="$3" value="$4" ttl="${5:-300}"
+  local zone_name="$1" record_name="$2" type="$3"
+  local value ttl quoted_value
+
+  type=$(printf '%s' "$type" | tr '[:lower:]' '[:upper:]')
+
+  if [[ "${type}" == "MX" ]]; then
+    shift 3
+    local mx_parsed
+    mx_parsed=$(r53_mx_value_and_ttl MX "$@")
+    value="${mx_parsed%%$'\t'*}"
+    ttl="${mx_parsed#*$'\t'}"
+    if [[ -z "$value" ]]; then
+      echo "Usage: awst r53 update <zone-name> <record-name> MX <priority> <mail-host> [ttl]" >&2
+      echo "     : awst r53 update <zone-name> <record-name> MX \"<priority> <mail-host>\" [ttl]" >&2
+      exit 1
+    fi
+  else
+    value="$4"
+    ttl="${5:-300}"
+  fi
 
   if [[ -z "$zone_name" ]] || [[ -z "$record_name" ]] || [[ -z "$type" ]] || [[ -z "$value" ]]; then
     echo "Usage: awst r53 update <zone-name> <record-name> <type> <value> [ttl]" >&2
@@ -125,14 +209,7 @@ update_record() {
   # Add trailing dot if not present
   [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
 
-  # Auto-append zone name if record_name is not fully qualified
-  if [[ "$record_name" != *. ]]; then
-    # Check if record_name already contains zone name
-    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
-      record_name="${record_name}.${zone_name%\.}"
-    fi
-  fi
-  [[ "$record_name" == *. ]] || record_name="${record_name}."
+  record_name=$(r53_fqdn_record_name "$zone_name" "$record_name")
 
   local zone_id
   zone_id=$(get_zone_id "$zone_name")
@@ -143,7 +220,7 @@ update_record() {
 
   # Create change batch JSON using jq for proper escaping
   # For TXT records, AWS requires the value to be enclosed in quotes
-  local quoted_value="$value"
+  quoted_value="$value"
   if [[ "$type" == "TXT" ]]; then
     quoted_value="\"$value\""
   fi
@@ -185,14 +262,7 @@ delete_record() {
   # Add trailing dot if not present
   [[ "$zone_name" == *. ]] || zone_name="${zone_name}."
 
-  # Auto-append zone name if record_name is not fully qualified
-  if [[ "$record_name" != *. ]]; then
-    # Check if record_name already contains zone name
-    if [[ "$record_name" != *"${zone_name%\.}"* ]]; then
-      record_name="${record_name}.${zone_name%\.}"
-    fi
-  fi
-  [[ "$record_name" == *. ]] || record_name="${record_name}."
+  record_name=$(r53_fqdn_record_name "$zone_name" "$record_name")
 
   local zone_id
   zone_id=$(get_zone_id "$zone_name")
@@ -259,6 +329,7 @@ examples:
   awst r53 zones
   awst r53 records example.com
   awst r53 create example.com www A 192.0.2.1 300
+  awst r53 create example.com @ MX 10 mail.example.com. 300
   awst r53 update example.com www A 192.0.2.2
   awst r53 delete example.com www A
 EOF
