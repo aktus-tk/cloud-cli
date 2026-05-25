@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst iam <command> [args]
+
+identity and access management
+
+commands:
+  policy ls [--csv]                       all customer managed policies
+  policy show <arn-or-name>               policy details (versions, document)
+  role ls [--csv]                         all roles
+  role show <role-name>                   role details (trust policy, attached policies)
+  role policies <role-name>               policies attached to role
+  user ls [--csv]                         all users
+  user show <user-name>                   user details (attached policies)
+  user policies <user-name>               policies attached to user
+
+examples:
+  awst iam policy ls
+  awst iam policy show MyPolicy
+  awst iam role ls
+  awst iam role show my-service-role
+  awst iam role policies my-service-role
+  awst iam user ls
+  awst iam user show alice
+EOF
+}
+
+# Policy commands
+policy_ls() {
+  local fmt="${1:-table}"
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "PolicyName,Arn,DefaultVersionId,CreateDate,UpdateDate"
+    aws iam list-policies --scope Local --query 'Policies[].[PolicyName,Arn,DefaultVersionId,CreateDate,UpdateDate]' --output text
+  else
+    echo -e "PolicyName\tArn\tDefaultVersion\tCreateDate"
+    aws iam list-policies --scope Local --query 'Policies[].[PolicyName,Arn,DefaultVersionId,CreateDate]' --output text | column -t -s $'\t'
+  fi
+}
+
+policy_show() {
+  local spec="${1:-}"
+  if [[ -z "$spec" ]]; then
+    echo "Usage: awst iam policy show <arn-or-name>" >&2
+    exit 1
+  fi
+
+  local arn="$spec"
+  if [[ ! "$spec" =~ ^arn:aws:iam:: ]]; then
+    arn="$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$spec'].Arn" --output text)"
+    if [[ -z "$arn" || "$arn" == "None" ]]; then
+      echo "Policy not found: $spec" >&2
+      exit 1
+    fi
+  fi
+
+  local json
+  json="$(aws iam get-policy --policy-arn "$arn" --output json)"
+
+  echo "$json" | jq -r '.Policy |
+    "PolicyName: \(.PolicyName)",
+    "Arn: \(.Arn)",
+    "DefaultVersionId: \(.DefaultVersionId)",
+    "CreateDate: \(.CreateDate)",
+    "UpdateDate: \(.UpdateDate)",
+    ""'
+
+  local version_id
+  version_id="$(echo "$json" | jq -r '.Policy.DefaultVersionId')"
+
+  echo "=== Policy Document (Default Version: $version_id) ==="
+  aws iam get-policy-version --policy-arn "$arn" --version-id "$version_id" \
+    --query 'PolicyVersion.Document' --output json | jq '.' 2>/dev/null || true
+}
+
+# Role commands
+role_ls() {
+  local fmt="${1:-table}"
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "RoleName,Arn,CreateDate,AssumeRolePolicyDocument"
+    aws iam list-roles --query 'Roles[].[RoleName,Arn,CreateDate]' --output text
+  else
+    echo -e "RoleName\tArn\tCreateDate"
+    aws iam list-roles --query 'Roles[].[RoleName,Arn,CreateDate]' --output text | column -t -s $'\t'
+  fi
+}
+
+role_show() {
+  local role_name="${1:-}"
+  if [[ -z "$role_name" ]]; then
+    echo "Usage: awst iam role show <role-name>" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws iam get-role --role-name "$role_name" --output json 2>/dev/null)" || {
+    echo "Role not found: $role_name" >&2
+    exit 1
+  }
+
+  echo "$json" | jq -r '.Role |
+    "RoleName: \(.RoleName)",
+    "Arn: \(.Arn)",
+    "CreateDate: \(.CreateDate)",
+    "MaxSessionDuration: \(.MaxSessionDuration)s",
+    ""'
+
+  echo "=== Trust Policy (AssumeRolePolicyDocument) ==="
+  echo "$json" | jq -r '.Role.AssumeRolePolicyDocument' | jq '.' 2>/dev/null || true
+
+  echo ""
+  echo "=== Attached Policies ==="
+  role_policies "$role_name"
+}
+
+role_policies() {
+  local role_name="${1:-}"
+  if [[ -z "$role_name" ]]; then
+    echo "Usage: awst iam role policies <role-name>" >&2
+    exit 1
+  fi
+
+  local attached
+  attached="$(aws iam list-attached-role-policies --role-name "$role_name" --query 'AttachedPolicies[].[PolicyName,PolicyArn]' --output text 2>/dev/null || true)"
+
+  if [[ -z "$attached" ]]; then
+    echo "(no attached policies)"
+    return 0
+  fi
+
+  echo -e "PolicyName\tPolicyArn"
+  echo "$attached" | column -t -s $'\t'
+}
+
+# User commands
+user_ls() {
+  local fmt="${1:-table}"
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "UserName,Arn,CreateDate"
+    aws iam list-users --query 'Users[].[UserName,Arn,CreateDate]' --output text
+  else
+    echo -e "UserName\tArn\tCreateDate"
+    aws iam list-users --query 'Users[].[UserName,Arn,CreateDate]' --output text | column -t -s $'\t'
+  fi
+}
+
+user_show() {
+  local user_name="${1:-}"
+  if [[ -z "$user_name" ]]; then
+    echo "Usage: awst iam user show <user-name>" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws iam get-user --user-name "$user_name" --output json 2>/dev/null)" || {
+    echo "User not found: $user_name" >&2
+    exit 1
+  }
+
+  echo "$json" | jq -r '.User |
+    "UserName: \(.UserName)",
+    "Arn: \(.Arn)",
+    "CreateDate: \(.CreateDate)",
+    "UserId: \(.UserId)",
+    ""'
+
+  echo "=== Attached Policies ==="
+  user_policies "$user_name"
+}
+
+user_policies() {
+  local user_name="${1:-}"
+  if [[ -z "$user_name" ]]; then
+    echo "Usage: awst iam user policies <user-name>" >&2
+    exit 1
+  fi
+
+  local attached
+  attached="$(aws iam list-attached-user-policies --user-name "$user_name" --query 'AttachedPolicies[].[PolicyName,PolicyArn]' --output text 2>/dev/null || true)"
+
+  if [[ -z "$attached" ]]; then
+    echo "(no attached policies)"
+    return 0
+  fi
+
+  echo -e "PolicyName\tPolicyArn"
+  echo "$attached" | column -t -s $'\t'
+}
+
+case "$sub" in
+  policy)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    cmd="$1"
+    shift || true
+    case "$cmd" in
+      ls|list)
+        policy_ls "$@"
+        ;;
+      show)
+        policy_show "$@"
+        ;;
+      *)
+        echo "unknown policy command: $cmd" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  role)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    cmd="$1"
+    shift || true
+    case "$cmd" in
+      ls|list)
+        role_ls "$@"
+        ;;
+      show)
+        role_show "$@"
+        ;;
+      policies)
+        role_policies "$@"
+        ;;
+      *)
+        echo "unknown role command: $cmd" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  user)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    cmd="$1"
+    shift || true
+    case "$cmd" in
+      ls|list)
+        user_ls "$@"
+        ;;
+      show)
+        user_show "$@"
+        ;;
+      policies)
+        user_policies "$@"
+        ;;
+      *)
+        echo "unknown user command: $cmd" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown iam command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

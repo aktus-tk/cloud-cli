@@ -102,6 +102,15 @@ awst alb listener NAME   # ALB のリスナー情報を表示
 awst alb tg NAME         # ALB のターゲットグループを表示
 awst alb health TG_NAME  # ターゲットグループのヘルスチェック結果
 
+awst iam policy ls       # customer managed policies 一覧
+awst iam policy show NAME  # policy 詳細（バージョン、ドキュメント）
+awst iam role ls         # role 一覧
+awst iam role show NAME  # role 詳細（信頼ポリシー、アタッチ済みポリシー）
+awst iam role policies NAME  # role にアタッチされたポリシー一覧
+awst iam user ls         # user 一覧
+awst iam user show NAME  # user 詳細（アタッチ済みポリシー）
+awst iam user policies NAME  # user にアタッチされたポリシー一覧
+
 awst r53 ...            # Route 53 操作
 ```
 
@@ -171,6 +180,17 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **health TG_NAME**: ターゲットグループのヘルスチェック結果（TargetId, Port, State, Reason）
 - **rule LISTENER_ARN**: リスナーのルール詳細を表示
 - **Helper**: `get_alb_arn_by_name()` で ALB 名から ARN を取得、`get_tg_arn_by_name()` でターゲットグループ名から ARN を取得
+
+### AWS IAM (`aws-cli/commands/iam`)
+
+- **policy ls**: Customer Managed Policy 一覧（テーブル/CSV）
+- **policy show NAME/ARN**: Policy 詳細情報（バージョン、ポリシードキュメント）
+- **role ls**: Role 一覧（テーブル/CSV）
+- **role show NAME**: Role 詳細情報（AssumeRolePolicyDocument、アタッチ済みポリシー）
+- **role policies NAME**: Role にアタッチされたポリシー一覧
+- **user ls**: User 一覧（テーブル/CSV）
+- **user show NAME**: User 詳細情報（アタッチ済みポリシー）
+- **user policies NAME**: User にアタッチされたポリシー一覧
 
 ### GCP GCE (`g-cli/commands/gce`)
 
