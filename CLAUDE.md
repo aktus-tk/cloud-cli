@@ -194,6 +194,7 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **user policies NAME**: User にアタッチされたポリシー一覧
 - **user create NAME [--policy ARN|NAME]...**: User 作成＋ポリシー直接アタッチ（複数対応）
   - Policy ARN または名前（Customer Managed/AWS Managed いずれでも指定可）で指定可能
+- **user attach-policy NAME POLICY**: User にポリシーをアタッチ（Policy 名または ARN で指定）
 
 ### GCP GCE (`g-cli/commands/gce`)
 
