@@ -22,6 +22,8 @@ commands:
   user policies <user-name>               policies attached to user
   user create <user-name> [--policy ARN|NAME]...  create user and attach policies
   user attach-policy <user-name> <policy-arn|name>  attach policy to user
+  access-key show <user-name>             list access keys for user
+  access-key create <user-name>           create access key for user
 
 examples:
   awst iam policy ls
@@ -35,6 +37,8 @@ examples:
   awst iam user show alice
   awst iam user create bob --policy AdministratorAccess --policy ReadOnlyAccess
   awst iam user attach-policy alice ReadOnlyAccess
+  awst iam access-key show bob
+  awst iam access-key create bob
 EOF
 }
 
@@ -312,6 +316,64 @@ user_attach_policy() {
   echo "Attached policy $(basename "$arn") to user $user_name"
 }
 
+# Access Key commands
+access_key_show() {
+  local user_name="${1:-}"
+  if [[ -z "$user_name" ]]; then
+    echo "Usage: awst iam access-key show <user-name>" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws iam list-access-keys --user-name "$user_name" --output json 2>/dev/null)" || {
+    echo "User not found or error: $user_name" >&2
+    exit 1
+  }
+
+  local key_count
+  key_count="$(echo "$json" | jq '.AccessKeyMetadata | length')"
+
+  if [[ "$key_count" -eq 0 ]]; then
+    echo "User: $user_name"
+    echo "(no access keys)"
+    return 0
+  fi
+
+  echo "User: $user_name"
+  echo ""
+  echo -e "ACCESS KEY ID\tSTATUS\tCREATED"
+  echo "$json" | jq -r '.AccessKeyMetadata[] | [.AccessKeyId, .Status, .CreateDate] | @tsv' | column -t -s $'\t'
+}
+
+access_key_create() {
+  local user_name="${1:-}"
+  if [[ -z "$user_name" ]]; then
+    echo "Usage: awst iam access-key create <user-name>" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws iam create-access-key --user-name "$user_name" --output json 2>&1)" || {
+    echo "$json" >&2
+    exit 1
+  }
+
+  local key_id secret_key
+  key_id="$(echo "$json" | jq -r '.AccessKey.AccessKeyId')"
+  secret_key="$(echo "$json" | jq -r '.AccessKey.SecretAccessKey')"
+
+  echo "User: $user_name"
+  echo ""
+  echo "AccessKeyId     : $key_id"
+  echo "SecretAccessKey : $secret_key"
+  echo ""
+  echo "=== Recommendations ==="
+  echo "✓ Save the Secret Access Key securely (cannot be retrieved later)"
+  echo "✓ Use this key for AWS CLI/SDK authentication"
+  echo "✓ Rotate access keys periodically"
+  echo "✓ Consider using temporary credentials (STS) instead if possible"
+}
+
 case "$sub" in
   policy)
     [[ $# -ge 1 ]] || { usage >&2; exit 1; }
@@ -377,6 +439,24 @@ case "$sub" in
         ;;
       *)
         echo "unknown user command: $cmd" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  access-key)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    cmd="$1"
+    shift || true
+    case "$cmd" in
+      show)
+        access_key_show "$@"
+        ;;
+      create)
+        access_key_create "$@"
+        ;;
+      *)
+        echo "unknown access-key command: $cmd" >&2
         usage >&2
         exit 1
         ;;
