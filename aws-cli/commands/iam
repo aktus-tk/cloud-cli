@@ -13,6 +13,7 @@ identity and access management
 commands:
   policy ls [--csv]                       all customer managed policies
   policy show <arn-or-name>               policy details (versions, document)
+  policy create <policy-name> <json-file|--document JSON>  create customer managed policy
   role ls [--csv]                         all roles
   role show <role-name>                   role details (trust policy, attached policies)
   role policies <role-name>               policies attached to role
@@ -24,6 +25,8 @@ commands:
 examples:
   awst iam policy ls
   awst iam policy show MyPolicy
+  awst iam policy create MyPolicy policy.json
+  awst iam policy create MyPolicy --document '{"Version":"2012-10-17","Statement":[...]}'
   awst iam role ls
   awst iam role show my-service-role
   awst iam role policies my-service-role
@@ -43,6 +46,47 @@ policy_ls() {
     echo -e "PolicyName\tArn\tDefaultVersion\tCreateDate"
     aws iam list-policies --scope Local --query 'Policies[].[PolicyName,Arn,DefaultVersionId,CreateDate]' --output text | column -t -s $'\t'
   fi
+}
+
+policy_create() {
+  local policy_name="${1:-}"
+  if [[ -z "$policy_name" ]]; then
+    echo "Usage: awst iam policy create <policy-name> <json-file|--document JSON>" >&2
+    exit 1
+  fi
+  shift || true
+
+  local policy_doc=""
+
+  if [[ "${1:-}" == "--document" ]]; then
+    shift || { echo "--document requires an argument" >&2; exit 1; }
+    policy_doc="$1"
+  elif [[ -f "${1:-}" ]]; then
+    policy_doc="$(cat "$1")"
+  elif [[ -n "${1:-}" ]]; then
+    echo "File not found or invalid option: $1" >&2
+    exit 1
+  else
+    echo "Usage: awst iam policy create <policy-name> <json-file|--document JSON>" >&2
+    exit 1
+  fi
+
+  if [[ -z "$policy_doc" ]]; then
+    echo "Policy document is empty" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws iam create-policy --policy-name "$policy_name" --policy-document "$policy_doc" --output json 2>&1)" || {
+    echo "$json" >&2
+    exit 1
+  }
+
+  echo "$json" | jq -r '.Policy |
+    "Created policy: \(.PolicyName)",
+    "Arn: \(.Arn)",
+    "DefaultVersionId: \(.DefaultVersionId)",
+    "CreateDate: \(.CreateDate)"'
 }
 
 policy_show() {
@@ -258,6 +302,9 @@ case "$sub" in
         ;;
       show)
         policy_show "$@"
+        ;;
+      create)
+        policy_create "$@"
         ;;
       *)
         echo "unknown policy command: $cmd" >&2
