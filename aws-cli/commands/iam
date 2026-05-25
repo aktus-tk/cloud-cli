@@ -19,6 +19,7 @@ commands:
   user ls [--csv]                         all users
   user show <user-name>                   user details (attached policies)
   user policies <user-name>               policies attached to user
+  user create <user-name> [--policy ARN|NAME]...  create user and attach policies
 
 examples:
   awst iam policy ls
@@ -28,6 +29,7 @@ examples:
   awst iam role policies my-service-role
   awst iam user ls
   awst iam user show alice
+  awst iam user create bob --policy AdministratorAccess --policy ReadOnlyAccess
 EOF
 }
 
@@ -149,6 +151,59 @@ user_ls() {
   fi
 }
 
+resolve_policy_arn() {
+  local spec="$1"
+  if [[ "$spec" =~ ^arn:aws:iam:: ]]; then
+    echo "$spec"
+    return 0
+  fi
+  local arn
+  arn="$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$spec'].Arn" --output text 2>/dev/null || true)"
+  if [[ -z "$arn" || "$arn" == "None" ]]; then
+    arn="$(aws iam list-policies --scope AWS --query "Policies[?PolicyName=='$spec'].Arn" --output text 2>/dev/null || true)"
+  fi
+  if [[ -z "$arn" || "$arn" == "None" ]]; then
+    echo "Policy not found: $spec" >&2
+    return 1
+  fi
+  echo "$arn"
+}
+
+user_create() {
+  local user_name="${1:-}"
+  if [[ -z "$user_name" ]]; then
+    echo "Usage: awst iam user create <user-name> [--policy ARN|NAME]..." >&2
+    exit 1
+  fi
+  shift || true
+
+  aws iam create-user --user-name "$user_name" 2>/dev/null || {
+    echo "Failed to create user: $user_name (may already exist)" >&2
+    exit 1
+  }
+  echo "Created user: $user_name"
+
+  local -a policies=()
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--policy" ]]; then
+      shift
+      [[ -z "${1:-}" ]] && { echo "--policy requires an argument" >&2; exit 1; }
+      policies+=("$1")
+      shift
+    else
+      echo "Unknown option: $1" >&2
+      exit 1
+    fi
+  done
+
+  for policy_spec in "${policies[@]}"; do
+    local arn
+    arn="$(resolve_policy_arn "$policy_spec")" || exit 1
+    aws iam attach-user-policy --user-name "$user_name" --policy-arn "$arn"
+    echo "Attached policy: $(basename "$arn")"
+  done
+}
+
 user_show() {
   local user_name="${1:-}"
   if [[ -z "$user_name" ]]; then
@@ -245,6 +300,9 @@ case "$sub" in
         ;;
       policies)
         user_policies "$@"
+        ;;
+      create)
+        user_create "$@"
         ;;
       *)
         echo "unknown user command: $cmd" >&2
