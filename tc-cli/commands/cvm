@@ -39,12 +39,32 @@ cvm_ls () {
    tccli cvm DescribeInstances --Limit 100 | jq -r '.InstanceSet | sort_by(.InstanceName) | .[] | [.InstanceName,.Placement.Zone,.InstanceId,.InstanceType,.InstanceState,.CPU,.Memory,.PrivateIpAddresses[0],.PublicIpAddresses[0],.VirtualPrivateCloud.VpcId,.VirtualPrivateCloud.SubnetId,.OsName,.SecurityGroupIds[0],(.SystemDisk.DiskType + ":" + (.SystemDisk.DiskSize | tostring)),([.DataDisks[]? | .DiskType + ":" + (.DiskSize | tostring)] | join(";"))] | @csv'
 }
 
+cvm_types () {
+  echo "InstanceType,Family,CPU,Memory(GB),GPU,FPGA,Status"
+  tccli cvm DescribeInstanceTypeConfigs --output json | jq -r '.InstanceTypeConfigSet[]? | [
+    .InstanceType,
+    .InstanceFamily,
+    .CPU,
+    .Memory,
+    (.GPU // 0),
+    (.FPGA // 0),
+    .Status
+  ] | @csv'
+}
+
 case "$cmd" in
   ls)
     if [[ "$1" == "--csv" ]]; then
-      cvm_ls 
+      cvm_ls
     else
       cvm_ls | column -t -s $'\t'
+    fi
+    ;;
+  types)
+    if [[ "$1" == "--csv" ]]; then
+      cvm_types
+    else
+      cvm_types | column -t -s $','
     fi
     ;;
   start)
@@ -63,6 +83,8 @@ case "$cmd" in
     echo "cvm commands:"
     echo "  ls         list instances (DescribeInstances)"
     echo "  ls --csv   CSV output"
+    echo "  types      list available instance types (DescribeInstanceTypeConfigs)"
+    echo "  types --csv CSV output"
     echo "  start NAME start instance (by instance-name or tag Name)"
     echo "  stop NAME  stop instance"
     ;;

@@ -147,6 +147,7 @@ gcloudt gcs rm gs://BUCKET/PREFIX/ -r             # プレフィックス配下�
 
 ```bash
 tcclit cvm ls           # CVM インスタンス一覧
+tcclit cvm types        # 使用可能なインスタンスタイプ一覧
 tcclit cvm start NAME   # インスタンスを起動
 tcclit cvm stop NAME    # インスタンスを停止
 tcclit vpc ...          # VPC 操作
@@ -228,7 +229,8 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 
 ### Tencent Cloud CVM (`tc-cli/commands/cvm`)
 
-- **ls**: インスタンス一覧（CSV フォーマット）
+- **ls**: インスタンス一覧（テーブル/CSV）
+- **types**: 使用可能なインスタンスタイプ一覧（DescribeInstanceTypeConfigs、テーブル/CSV）
 - **start/stop**: インスタンス制御（tccli API 呼び出し）
 - **Helper**: `cvm_get_id()` でインスタンス名またはタグから ID を検索
 
