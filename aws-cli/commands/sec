@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst sec <command> [args]
+
+AWS Secrets Manager
+
+commands:
+  ls [--csv]                      list all secrets
+  show <name>                     show secret metadata (tags, rotation, etc.)
+  get <name> [--json]             get secret value (supports both string and binary secrets)
+  create <name> <options>         create a new secret
+  update <name> <options>         update secret value
+  delete <name> [--force]         delete secret (30-day recovery by default, --force for immediate)
+  restore <name>                  restore a deleted secret
+
+create/update options:
+  --string <value>                plain text secret value
+  --json <value>                  JSON secret value
+  --file <path>                   read secret from file
+  --description <text>            secret description (create only)
+
+examples:
+  awst sec ls
+  awst sec ls --csv
+  awst sec show my-secret
+  awst sec get my-secret              # get string secret
+  awst sec get my-db-creds --json     # parse JSON string secret
+  awst sec get my-binary-secret       # get binary secret (auto-decoded)
+  awst sec create my-api-key --string "abc123xyz"
+  awst sec create my-db-creds --json '{"username":"admin","password":"pass123"}'
+  awst sec create my-cert --file cert.pem --description "SSL certificate"
+  awst sec update my-api-key --string "new-value"
+  awst sec delete my-old-secret
+  awst sec delete my-old-secret --force
+  awst sec restore my-secret
+EOF
+}
+
+sec_ls() {
+  local fmt="${1:-table}"
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "Name,Arn,LastChangedDate,LastAccessedDate,Description"
+    aws secretsmanager list-secrets --query 'SecretList[].[Name,ARN,LastChangedDate,LastAccessedDate,Description]' --output text | sed 's/\t/,/g'
+  else
+    aws secretsmanager list-secrets --output json | jq -r '
+      (["Name", "LastChanged", "Description"] | @tsv),
+      (.SecretList[]
+        | [
+            .Name,
+            (.LastChangedDate // "-"),
+            (.Description // "-")
+          ]
+        | @tsv)
+    ' | column -t -s $'\t'
+  fi
+}
+
+sec_show() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sec show <name>" >&2
+    exit 1
+  fi
+
+  aws secretsmanager describe-secret --secret-id "$name" --output json | jq -r '
+    "Name: \(.Name)",
+    "ARN: \(.ARN)",
+    "Description: \(.Description // "-")",
+    "Created: \(.CreatedDate)",
+    "LastChanged: \(.LastChangedDate // "-")",
+    "LastAccessed: \(.LastAccessedDate // "-")",
+    "RotationEnabled: \(.RotationEnabled // false)",
+    (if .RotationEnabled then "RotationLambdaARN: \(.RotationLambdaARN // "-")" else empty end),
+    (if .RotationEnabled then "RotationRules: \(.RotationRules.AutomaticallyAfterDays // "-") days" else empty end),
+    "DeletedDate: \(.DeletedDate // "-")",
+    "",
+    "Tags:",
+    (if .Tags then (.Tags[] | "  \(.Key): \(.Value)") else "  (none)" end)
+  '
+}
+
+sec_get() {
+  local name="${1:-}"
+  local format="${2:-plain}"
+
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sec get <name> [--json|--binary]" >&2
+    exit 1
+  fi
+
+  local response
+  response=$(aws secretsmanager get-secret-value --secret-id "$name" --output json)
+
+  # Check if SecretBinary exists
+  local has_binary
+  has_binary=$(echo "$response" | jq -r 'has("SecretBinary")')
+
+  if [[ "$has_binary" == "true" ]]; then
+    # Binary secret - decode base64
+    echo "$response" | jq -r '.SecretBinary' | base64 -d
+  else
+    # String secret
+    if [[ "$format" == "--json" ]]; then
+      echo "$response" | jq -r '.SecretString | fromjson'
+    else
+      echo "$response" | jq -r '.SecretString'
+    fi
+  fi
+}
+
+sec_create() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sec create <name> <options>" >&2
+    echo "Options: --string <value> | --json <value> | --file <path> [--description <text>]" >&2
+    exit 1
+  fi
+  shift
+
+  local secret_value=""
+  local description=""
+  local value_type=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --string)
+        secret_value="$2"
+        value_type="string"
+        shift 2
+        ;;
+      --json)
+        secret_value="$2"
+        value_type="json"
+        shift 2
+        ;;
+      --file)
+        if [[ ! -f "$2" ]]; then
+          echo "Error: File not found: $2" >&2
+          exit 1
+        fi
+        secret_value="$(cat "$2")"
+        value_type="string"
+        shift 2
+        ;;
+      --description)
+        description="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$secret_value" ]]; then
+    echo "Error: No secret value provided" >&2
+    exit 1
+  fi
+
+  local cmd="aws secretsmanager create-secret --name \"$name\" --secret-string"
+
+  if [[ "$value_type" == "json" ]]; then
+    cmd="$cmd $(printf '%q' "$secret_value")"
+  else
+    cmd="$cmd $(printf '%q' "$secret_value")"
+  fi
+
+  if [[ -n "$description" ]]; then
+    cmd="$cmd --description $(printf '%q' "$description")"
+  fi
+
+  eval "$cmd" | jq -r '"Created: \(.Name)", "ARN: \(.ARN)", "VersionId: \(.VersionId)"'
+}
+
+sec_update() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sec update <name> <options>" >&2
+    echo "Options: --string <value> | --json <value> | --file <path>" >&2
+    exit 1
+  fi
+  shift
+
+  local secret_value=""
+  local value_type=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --string)
+        secret_value="$2"
+        value_type="string"
+        shift 2
+        ;;
+      --json)
+        secret_value="$2"
+        value_type="json"
+        shift 2
+        ;;
+      --file)
+        if [[ ! -f "$2" ]]; then
+          echo "Error: File not found: $2" >&2
+          exit 1
+        fi
+        secret_value="$(cat "$2")"
+        value_type="string"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$secret_value" ]]; then
+    echo "Error: No secret value provided" >&2
+    exit 1
+  fi
+
+  aws secretsmanager update-secret --secret-id "$name" --secret-string "$secret_value" | jq -r '"Updated: \(.Name)", "ARN: \(.ARN)", "VersionId: \(.VersionId)"'
+}
+
+sec_delete() {
+  local name="${1:-}"
+  local force="${2:-}"
+
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sec delete <name> [--force]" >&2
+    exit 1
+  fi
+
+  if [[ "$force" == "--force" ]]; then
+    aws secretsmanager delete-secret --secret-id "$name" --force-delete-without-recovery | jq -r '"Deleted immediately: \(.Name)", "ARN: \(.ARN)", "DeletionDate: \(.DeletionDate)"'
+  else
+    aws secretsmanager delete-secret --secret-id "$name" | jq -r '"Scheduled for deletion: \(.Name)", "ARN: \(.ARN)", "DeletionDate: \(.DeletionDate)", "", "Recovery window: 30 days", "To delete immediately, use: awst sec delete \(.Name) --force"'
+  fi
+}
+
+sec_restore() {
+  local name="${1:-}"
+
+  if [[ -z "$name" ]]; then
+    echo "Usage: awst sec restore <name>" >&2
+    exit 1
+  fi
+
+  aws secretsmanager restore-secret --secret-id "$name" | jq -r '"Restored: \(.Name)", "ARN: \(.ARN)"'
+}
+
+case "$sub" in
+  ls|list)
+    sec_ls "$@"
+    ;;
+  show|describe)
+    sec_show "$@"
+    ;;
+  get|value)
+    sec_get "$@"
+    ;;
+  create)
+    sec_create "$@"
+    ;;
+  update)
+    sec_update "$@"
+    ;;
+  delete|rm)
+    sec_delete "$@"
+    ;;
+  restore)
+    sec_restore "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown sec command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

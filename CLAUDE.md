@@ -14,6 +14,8 @@ cloud-cli/
 │       ├── r53       # Route 53 DNS
 │       ├── alb       # Application Load Balancer
 │       ├── cf        # CloudFront
+│       ├── iam       # Identity and Access Management
+│       ├── sec       # Secrets Manager
 │       ├── lightsail # Lightsail
 │       ├── waf       # Web Application Firewall
 │       ├── sg        # Security Groups
@@ -111,6 +113,13 @@ awst iam user ls         # user 一覧
 awst iam user show NAME  # user 詳細（アタッチ済みポリシー）
 awst iam user policies NAME  # user にアタッチされたポリシー一覧
 
+awst sec ls              # シークレット一覧
+awst sec show NAME       # シークレットメタデータ詳細
+awst sec get NAME        # シークレット値取得
+awst sec create NAME --string "value"  # シークレット作成
+awst sec update NAME --string "new-value"  # シークレット更新
+awst sec delete NAME     # シークレット削除
+
 awst r53 ...            # Route 53 操作
 ```
 
@@ -198,6 +207,20 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **user attach-policy NAME POLICY**: User にポリシーをアタッチ（Policy 名または ARN で指定）
 - **access-key show NAME**: User のアクセスキー一覧（AccessKeyId, Status, CreateDate）
 - **access-key create NAME**: User 用のアクセスキー作成（AccessKeyId, SecretAccessKey 表示＋レコメンデーション）
+
+### AWS Secrets Manager (`aws-cli/commands/sec`)
+
+- **ls**: シークレット一覧（テーブル/CSV）
+- **show NAME**: シークレットメタデータ詳細（ARN、作成日、最終変更日、ローテーション設定、タグなど）
+- **get NAME**: シークレット値取得（プレーンテキスト）
+- **get NAME --json**: シークレット値取得（JSON形式でパース）
+- **create NAME --string VALUE**: 文字列シークレットを作成
+- **create NAME --json VALUE**: JSON シークレットを作成
+- **create NAME --file PATH**: ファイルからシークレットを作成
+- **update NAME --string/--json/--file**: シークレット値を更新
+- **delete NAME**: シークレットを削除（30日間の復旧期間）
+- **delete NAME --force**: シークレットを即座に削除
+- **restore NAME**: 削除したシークレットを復元
 
 ### GCP GCE (`g-cli/commands/gce`)
 
