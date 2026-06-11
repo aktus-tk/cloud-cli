@@ -87,14 +87,18 @@ cf_behavior() {
   fi
   aws cloudfront get-distribution --id "$id" --output json | jq -r '
     .Distribution.DistributionConfig as $c |
-    (["Priority", "Path", "Origin", "CachePolicy", "OriginRequestPolicy"] | @tsv),
+    (["Priority", "Path", "Origin", "CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "MinTTL", "DefaultTTL", "MaxTTL"] | @tsv),
     ((($c.CacheBehaviors.Items // [] | to_entries | map(.value + {Priority: (.key | tostring)})) + [$c.DefaultCacheBehavior + {Priority: "default"}])[]
       | [
           .Priority,
           (.PathPattern // "default"),
           .TargetOriginId,
           (.CachePolicyId // "-"),
-          (.OriginRequestPolicyId // "-")
+          (.OriginRequestPolicyId // "-"),
+          (.ResponseHeadersPolicyId // "-"),
+          (.MinTTL // "-" | tostring),
+          (.DefaultTTL // "-" | tostring),
+          (.MaxTTL // "-" | tostring)
         ]
       | @tsv)
   ' | column -t -s $'\t'
