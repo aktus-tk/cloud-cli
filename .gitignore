@@ -5,6 +5,10 @@ Thumbs.db
 *.swo
 *~
 
+
+.claude
+.harness-mem/
+
 # Editors
 .vscode/
 .idea/

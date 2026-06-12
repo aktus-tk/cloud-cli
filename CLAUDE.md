@@ -11,6 +11,7 @@ cloud-cli/
 │   │   └── awst      # メインエントリーポイント
 │   └── commands/     # サブコマンド定義
 │       ├── ec2       # EC2 インスタンス操作
+│       ├── eks       # Elastic Kubernetes Service
 │       ├── r53       # Route 53 DNS
 │       ├── alb       # Application Load Balancer
 │       ├── cf        # CloudFront
@@ -120,7 +121,13 @@ awst sec create NAME --string "value"  # シークレット作成
 awst sec update NAME --string "new-value"  # シークレット更新
 awst sec delete NAME     # シークレット削除
 
-awst r53 ...            # Route 53 操作
+awst eks list-clusters           # EKS クラスター一覧
+awst eks list-clusters --csv     # EKS クラスター一覧（CSV形式）
+awst eks update-kubeconfig NAME          # クラスターの kubeconfig を更新
+awst eks update-kubeconfig NAME --dry-run # kubeconfig を標準出力に表示
+
+awst r53 records ZONE                    # Route 53 レコード一覧
+awst r53 records --mlr ZONE              # Route 53 レコード一覧（Miller でフォーマット）
 ```
 
 ### GCP CLI (`gcloudt`)
@@ -208,6 +215,7 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **access-key show NAME**: User のアクセスキー一覧（AccessKeyId, Status, CreateDate）
 - **access-key create NAME**: User 用のアクセスキー作成（AccessKeyId, SecretAccessKey 表示＋レコメンデーション）
 
+<<<<<<< HEAD
 ### AWS Secrets Manager (`aws-cli/commands/sec`)
 
 - **ls**: シークレット一覧（テーブル/CSV）
@@ -221,6 +229,13 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **delete NAME**: シークレットを削除（30日間の復旧期間）
 - **delete NAME --force**: シークレットを即座に削除
 - **restore NAME**: 削除したシークレットを復元
+=======
+### AWS EKS (`aws-cli/commands/eks`)
+
+- **list-clusters**: EKS クラスター一覧（Name, Version, Status, Endpoint, RoleArn, Created）テーブル/CSV
+- **update-kubeconfig NAME**: 指定クラスターの kubeconfig をローカルに更新
+- **update-kubeconfig NAME --dry-run**: kubeconfig を標準出力に出力（kubeconfig の確認・パイプ処理用）
+>>>>>>> 34c33ef (chore: update .gitignore and CLAUDE.md)
 
 ### GCP GCE (`g-cli/commands/gce`)
 
