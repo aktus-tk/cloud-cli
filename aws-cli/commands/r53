@@ -14,11 +14,27 @@ zones_list() {
 # List resource record sets for a specific zone
 zones_records() {
   local zone_name="$1"
+  local use_mlr=0
+
+  # Parse options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mlr)
+        use_mlr=1
+        shift
+        ;;
+      *)
+        zone_name="$1"
+        shift
+        ;;
+    esac
+  done
 
   if [[ -z "$zone_name" ]]; then
-    echo "Usage: awst r53 records <zone-name>"
+    echo "Usage: awst r53 records [--mlr] <zone-name>"
     echo
     echo "Example: awst r53 records example.com"
+    echo "Example: awst r53 records --mlr example.com"
     exit 1
   fi
 
@@ -35,14 +51,29 @@ zones_records() {
   fi
 
   # Output header
-  cols="Name,Type,AliasTarget.DNSName,AliasTarget.EvaluateTargetHealth,ResourceRecords[0].Value,ResourceRecords[1].Value,ResourceRecords[2].Value,ResourceRecords[3].Value"
-  echo "$cols"
+  local csv_output
+  csv_output=$(
+    {
+      echo "Name,Type,AliasTarget.DNSName,AliasTarget.EvaluateTargetHealth,Value"
+      # List records and consolidate ResourceRecords values
+      aws route53 list-resource-record-sets \
+        --hosted-zone-id "$zone_id" \
+        --query "ResourceRecordSets[]" \
+        --output json | jq -r '.[] | [
+          .Name,
+          .Type,
+          (.AliasTarget.DNSName // ""),
+          (.AliasTarget.EvaluateTargetHealth // ""),
+          ((.ResourceRecords // []) | map(.Value) | join(","))
+        ] | @csv'
+    }
+  )
 
-  # List records
-  aws route53 list-resource-record-sets \
-    --hosted-zone-id "$zone_id" \
-    --query "ResourceRecordSets[].[$cols]" \
-    | jq -r '.[]|@csv'
+  if [[ $use_mlr -eq 1 ]]; then
+    echo "$csv_output" | mlr --icsv --opprint cat
+  else
+    echo "$csv_output"
+  fi
 }
 
 # Get zone ID by zone name
