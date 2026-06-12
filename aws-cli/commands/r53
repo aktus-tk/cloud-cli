@@ -54,7 +54,7 @@ zones_records() {
   local csv_output
   csv_output=$(
     {
-      echo "Name,Type,AliasTarget.DNSName,AliasTarget.EvaluateTargetHealth,Value"
+      echo "Name,Type,AliasTarget.DNSName,Value"
       # List records and consolidate ResourceRecords values
       aws route53 list-resource-record-sets \
         --hosted-zone-id "$zone_id" \
@@ -63,7 +63,6 @@ zones_records() {
           .Name,
           .Type,
           (.AliasTarget.DNSName // ""),
-          (.AliasTarget.EvaluateTargetHealth // ""),
           ((.ResourceRecords // []) | map(.Value) | join(","))
         ] | @csv'
     }
