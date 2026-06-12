@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+eks_cluster_list_csv() {
+  echo "Name,Version,Status,Endpoint,RoleArn,Created"
+  aws eks list-clusters --query 'clusters[]' --output text | while read cluster_name; do
+    aws eks describe-cluster --name "$cluster_name" --query "cluster.[name,version,status,endpoint,roleArn,createdAt]" --output text | tr '\t' ','
+  done
+}
+
+case "$cmd" in
+  list-clusters)
+    if [[ "$1" == "--csv" ]]; then
+      eks_cluster_list_csv
+    else
+      eks_cluster_list_csv | column -s, -t
+    fi
+    ;;
+  update-kubeconfig)
+    cluster_name=$1
+    if [[ -z "$cluster_name" ]]; then
+      echo "cluster name required"
+      exit 1
+    fi
+
+    if [[ "$2" == "--dry-run" ]]; then
+      aws eks update-kubeconfig --name "$cluster_name" --dry-run
+    else
+      aws eks update-kubeconfig --name "$cluster_name"
+    fi
+    ;;
+  *)
+    echo "eks commands:"
+    echo "  list-clusters            list EKS clusters"
+    echo "  list-clusters --csv      list EKS clusters as csv"
+    echo "  update-kubeconfig NAME  update kubeconfig for cluster"
+    echo "  update-kubeconfig NAME --dry-run  output kubeconfig to stdout"
+    ;;
+esac
