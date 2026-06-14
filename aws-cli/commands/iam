@@ -15,8 +15,9 @@ commands:
   policy show <arn-or-name>               policy details (versions, document)
   policy create <policy-name> <json-file|--document JSON>  create customer managed policy
   role ls [--csv]                         all roles
-  role show <role-name>                   role details (trust policy, attached policies)
+  role show <role-name>                   role details (trust policy, attached policies, inline policies)
   role policies <role-name>               policies attached to role
+  role inline-policies <role-name>        inline policies attached to role
   user ls [--csv]                         all users
   user show <user-name>                   user details (attached policies)
   user policies <user-name>               policies attached to user
@@ -33,6 +34,7 @@ examples:
   awst iam role ls
   awst iam role show my-service-role
   awst iam role policies my-service-role
+  awst iam role inline-policies my-service-role
   awst iam user ls
   awst iam user show alice
   awst iam user create bob --policy AdministratorAccess --policy ReadOnlyAccess
@@ -168,6 +170,10 @@ role_show() {
   echo ""
   echo "=== Attached Policies ==="
   role_policies "$role_name"
+
+  echo ""
+  echo "=== Inline Policies ==="
+  role_inline_policies "$role_name"
 }
 
 role_policies() {
@@ -187,6 +193,29 @@ role_policies() {
 
   echo -e "PolicyName\tPolicyArn"
   echo "$attached" | column -t -s $'\t'
+}
+
+role_inline_policies() {
+  local role_name="${1:-}"
+  if [[ -z "$role_name" ]]; then
+    echo "Usage: awst iam role inline-policies <role-name>" >&2
+    exit 1
+  fi
+
+  local inline_policies
+  inline_policies="$(aws iam list-role-policies --role-name "$role_name" --query 'PolicyNames[]' --output text 2>/dev/null || true)"
+
+  if [[ -z "$inline_policies" ]]; then
+    echo "(no inline policies)"
+    return 0
+  fi
+
+  for policy_name in $inline_policies; do
+    echo "=== Inline Policy: $policy_name ==="
+    aws iam get-role-policy --role-name "$role_name" --policy-name "$policy_name" \
+      --query 'RolePolicyDetail.PolicyDocument' --output json | jq '.' 2>/dev/null || true
+    echo ""
+  done
 }
 
 # User commands
@@ -409,6 +438,9 @@ case "$sub" in
         ;;
       policies)
         role_policies "$@"
+        ;;
+      inline-policies)
+        role_inline_policies "$@"
         ;;
       *)
         echo "unknown role command: $cmd" >&2

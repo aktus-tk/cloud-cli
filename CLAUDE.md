@@ -204,8 +204,9 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **policy show NAME/ARN**: Policy 詳細情報（バージョン、ポリシードキュメント）
 - **policy create NAME <file|--document JSON>**: Customer Managed Policy 作成（JSON ファイルまたは JSON 文字列指定）
 - **role ls**: Role 一覧（テーブル/CSV）
-- **role show NAME**: Role 詳細情報（AssumeRolePolicyDocument、アタッチ済みポリシー）
+- **role show NAME**: Role 詳細情報（AssumeRolePolicyDocument、アタッチ済みポリシー、インラインポリシー）
 - **role policies NAME**: Role にアタッチされたポリシー一覧
+- **role inline-policies NAME**: Role に埋め込まれたインラインポリシー一覧（ポリシードキュメント付き）
 - **user ls**: User 一覧（テーブル/CSV）
 - **user show NAME**: User 詳細情報（アタッチ済みポリシー）
 - **user policies NAME**: User にアタッチされたポリシー一覧
