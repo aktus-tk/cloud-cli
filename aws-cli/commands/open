@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -e
+
+SERVICE_MAP_URL="https://raw.githubusercontent.com/fwdcloudsec/granted/refs/heads/main/pkg/console/service_map.go"
+
+usage() {
+  cat <<EOF
+usage: awst open [SERVICE | --servicemap]
+
+Open AWS Management Console via granted (assume).
+
+Requires AWS_PROFILE (e.g. direnv .envrc in project directory).
+
+examples:
+  awst open .                        open default console
+  awst open s3                       open S3 console
+  awst open acm --region us-east-1   open ACM console (us-east-1)
+  awst open --servicemap             list available services
+
+See README_granted.md for granted setup.
+EOF
+}
+
+show_servicemap() {
+  local body
+  if ! body="$(curl -fsSL "$SERVICE_MAP_URL")"; then
+    echo "failed to fetch service map from $SERVICE_MAP_URL" >&2
+    exit 1
+  fi
+
+  {
+    printf 'Alias\tConsole\n'
+    echo "$body" | sed -n 's/^[[:space:]]*"\([^"]*\)"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1\t\2/p' \
+      | awk -F'\t' '{ if ($1 == "") $1 = "."; print }' \
+      | sort -t $'\t' -k1,1
+  } | column -t -s $'\t'
+}
+
+require_profile() {
+  if [[ -z "${AWS_PROFILE:-}" ]]; then
+    echo "AWS_PROFILE is not set (use direnv or export AWS_PROFILE=...)" >&2
+    exit 1
+  fi
+}
+
+require_assume() {
+  if ! command -v assume >/dev/null 2>&1; then
+    echo "assume not found (install granted: see README_granted.md)" >&2
+    exit 1
+  fi
+}
+
+case "${1:-}" in
+  help|--help|-h)
+    usage
+    ;;
+  --servicemap)
+    show_servicemap
+    ;;
+  .)
+    shift || true
+    require_profile
+    require_assume
+    exec assume "$AWS_PROFILE" -c "$@"
+    ;;
+  -*)
+    require_profile
+    require_assume
+    exec assume "$AWS_PROFILE" -c "$@"
+    ;;
+  "")
+    usage
+    ;;
+  *)
+    require_profile
+    require_assume
+    exec assume "$AWS_PROFILE" -c -s "$1" "${@:2}"
+    ;;
+esac

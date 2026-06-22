@@ -56,6 +56,17 @@ export PATH="$HOME/bin:$PATH"
 
 ### AWS CLI (`awst`)
 
+#### AWS コンソール (Granted)
+
+```bash
+awst open .                        # デフォルトコンソール（要 AWS_PROFILE）
+awst open s3                       # S3 コンソール
+awst open acm --region us-east-1   # ACM コンソール（リージョン指定）
+awst open --servicemap             # 利用可能なサービス一覧
+```
+
+Granted のセットアップと WSL でのブラウザ起動は [README_granted.md](README_granted.md) を参照。
+
 #### EC2 インスタンス操作
 
 ```bash
