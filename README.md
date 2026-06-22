@@ -6,10 +6,11 @@ AWS、GCP、Tencent Cloud の CLI ラッパーツール集。各クラウドプ�
 
 ### 1. リポジトリのクローン
 
+GitHub の clone 先にそのまま置きます（例: `~/github/aktus-tk/cloud-cli`）:
+
 ```bash
-sudo mkdir -p /opt/cloud-cli
-sudo chown $USER:$USER /opt/cloud-cli
-git clone <repository-url> /opt/cloud-cli
+mkdir -p ~/github/aktus-tk
+git clone <repository-url> ~/github/aktus-tk/cloud-cli
 ```
 
 ### 2. シンボリックリンクの作成
@@ -18,20 +19,22 @@ git clone <repository-url> /opt/cloud-cli
 
 ```bash
 mkdir -p ~/bin
-ln -s /opt/cloud-cli/aws-cli/bin/awst ~/bin/awst
-ln -s /opt/cloud-cli/g-cli/bin/gcloudt ~/bin/gcloudt
-ln -s /opt/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
+ln -sf ~/github/aktus-tk/cloud-cli/aws-cli/bin/awst ~/bin/awst
+ln -sf ~/github/aktus-tk/cloud-cli/g-cli/bin/gcloudt ~/bin/gcloudt
+ln -sf ~/github/aktus-tk/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 ```
 
 確認:
 
 ```bash
-ls -l ~/bin | grep cloud-cli
+ls -l ~/bin/awst ~/bin/gcloudt ~/bin/tcclit
 # 出力例:
-# lrwxrwxrwx 1 tk tk 31 Apr 23 11:41 awst -> /opt/cloud-cli/aws-cli/bin/awst
-# lrwxrwxrwx 1 tk tk 32 Apr 23 11:41 gcloudt -> /opt/cloud-cli/g-cli/bin/gcloudt
-# lrwxrwxrwx 1 tk tk 32 Apr 23 11:41 tcclit -> /opt/cloud-cli/tc-cli/bin/tcclit
+# lrwxrwxrwx 1 user user 56 Jun 22 12:00 awst -> ~/github/aktus-tk/cloud-cli/aws-cli/bin/awst
+# lrwxrwxrwx 1 user user 57 Jun 22 12:00 gcloudt -> ~/github/aktus-tk/cloud-cli/g-cli/bin/gcloudt
+# lrwxrwxrwx 1 user user 57 Jun 22 12:00 tcclit -> ~/github/aktus-tk/cloud-cli/tc-cli/bin/tcclit
 ```
+
+> **補足**: clone 先のパスが異なる場合は、上記の `ln -sf` のパスを読み替えてください。`git pull` で更新がそのまま反映されます。
 
 ### 3. PATH の設定
 
