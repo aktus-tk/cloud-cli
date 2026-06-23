@@ -11,6 +11,34 @@ eks_cluster_list_csv() {
   done
 }
 
+eks_addons_list_csv() {
+  local cluster_name=$1
+  if [[ -z "$cluster_name" ]]; then
+    # すべてのクラスターを対象
+    echo "Cluster,ClusterVersion,AddonName,AddonVersion,ServiceAccountRoleArn,Status,Created"
+    aws eks list-clusters --output json | jq -r '.clusters[]' | while read cluster; do
+      _eks_addons_for_cluster "$cluster"
+    done
+  else
+    # 特定クラスターのみ
+    echo "ClusterVersion,AddonName,AddonVersion,ServiceAccountRoleArn,Status,Created"
+    local cluster_version=$(aws eks describe-cluster --name "$cluster_name" --query "cluster.version" --output text)
+    aws eks list-addons --cluster-name "$cluster_name" --output json | jq -r '.addons[]' | while read addon_name; do
+      aws eks describe-addon --cluster-name "$cluster_name" --addon-name "$addon_name" --query "addon.[addonName,addonVersion,serviceAccountRoleArn,status,createdAt]" --output text | sed "s/^/$cluster_version\t/" | tr '\t' ','
+    done
+  fi
+}
+
+_eks_addons_for_cluster() {
+  local cluster=$1
+  # クラスターバージョンを取得
+  local cluster_version=$(aws eks describe-cluster --name "$cluster" --query "cluster.version" --output text)
+
+  aws eks list-addons --cluster-name "$cluster" --output json | jq -r '.addons[]' | while read addon_name; do
+    aws eks describe-addon --cluster-name "$cluster" --addon-name "$addon_name" --query "addon.[addonName,addonVersion,serviceAccountRoleArn,status,createdAt]" --output text | sed "s/^/$cluster\t$cluster_version\t/" | tr '\t' ','
+  done
+}
+
 case "$cmd" in
   list-clusters)
     if [[ "$1" == "--csv" ]]; then
@@ -32,11 +60,27 @@ case "$cmd" in
       aws eks update-kubeconfig --name "$cluster_name"
     fi
     ;;
+  list-addons)
+    cluster_name=$1
+    csv_flag=$2
+    if [[ "$cluster_name" == "--csv" ]]; then
+      csv_flag=$1
+      cluster_name=""
+    fi
+
+    if [[ "$csv_flag" == "--csv" ]]; then
+      eks_addons_list_csv "$cluster_name"
+    else
+      eks_addons_list_csv "$cluster_name" | column -s, -t
+    fi
+    ;;
   *)
     echo "eks commands:"
-    echo "  list-clusters            list EKS clusters"
-    echo "  list-clusters --csv      list EKS clusters as csv"
-    echo "  update-kubeconfig NAME  update kubeconfig for cluster"
-    echo "  update-kubeconfig NAME --dry-run  output kubeconfig to stdout"
+    echo "  list-clusters                    list EKS clusters"
+    echo "  list-clusters --csv              list EKS clusters as csv"
+    echo "  list-addons [CLUSTER_NAME]       list EKS addons with versions (all clusters if not specified)"
+    echo "  list-addons [CLUSTER_NAME] --csv list EKS addons as csv"
+    echo "  update-kubeconfig NAME           update kubeconfig for cluster"
+    echo "  update-kubeconfig NAME --dry-run output kubeconfig to stdout"
     ;;
 esac
