@@ -211,9 +211,8 @@ role_inline_policies() {
   fi
 
   for policy_name in $inline_policies; do
-    echo "=== Inline Policy: $policy_name ==="
     aws iam get-role-policy --role-name "$role_name" --policy-name "$policy_name" \
-      --query 'RolePolicy.PolicyDocument' --output json | jq '.' 2>/dev/null || true
+      --query 'RolePolicy' --output json | jq '.' 2>/dev/null || true
     echo ""
   done
 }
