@@ -212,7 +212,7 @@ role_inline_policies() {
 
   for policy_name in $inline_policies; do
     aws iam get-role-policy --role-name "$role_name" --policy-name "$policy_name" \
-      --query 'RolePolicy' --output json | jq '.' 2>/dev/null || true
+      --output json | jq '.' 2>/dev/null || true
     echo ""
   done
 }
