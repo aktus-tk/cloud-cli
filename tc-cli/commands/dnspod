@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+dnspod_ls () {
+  echo "Name,DomainId,Status,DNSStatus,Grade,RecordCount,TTL,CreatedOn,UpdatedOn"
+  tccli dnspod DescribeDomainList --Limit 3000 --output json | jq -r '
+    .DomainList // [] | sort_by(.Name) | .[] | [
+      .Name,
+      .DomainId,
+      .Status,
+      .DNSStatus,
+      (.GradeTitle // .Grade),
+      .RecordCount,
+      .TTL,
+      .CreatedOn,
+      .UpdatedOn
+    ] | @csv'
+}
+
+dnspod_show () {
+  local domain=$1
+  [[ -n "$domain" ]] || { echo "usage: tcclit dnspod show DOMAIN" >&2; exit 1; }
+  tccli dnspod DescribeDomain --Domain "$domain" --output json | jq -r '
+    .DomainInfo as $d |
+    "Domain: \($d.Domain // $d.Name // "-")",
+    "DomainId: \($d.DomainId)",
+    "Status: \($d.Status)",
+    "DNSStatus: \($d.DNSStatus // $d.DnsStatus // "-")",
+    "Grade: \($d.GradeTitle // $d.Grade // "-") (\($d.Grade // "-"))",
+    "RecordCount: \($d.RecordCount)",
+    "TTL: \($d.TTL)",
+    "Owner: \($d.Owner // "-")",
+    "IsVip: \($d.IsVip // "-")",
+    "CreatedOn: \($d.CreatedOn)",
+    "UpdatedOn: \($d.UpdatedOn)",
+    "Remark: \($d.Remark // "")",
+    "EffectiveDNS: \(([$d.EffectiveDNS // $d.DnspodNsList // $d.ActualNsList // []] | flatten | join(", ")) // "-")",
+    (if ($d.TagList // [] | length) > 0 then
+      "Tags:",
+      ($d.TagList[] | "  \(.TagKey)=\(.TagValue)")
+    else empty end)'
+}
+
+dnspod_records () {
+  local domain=$1
+  [[ -n "$domain" ]] || { echo "usage: tcclit dnspod records DOMAIN" >&2; exit 1; }
+  echo "Name,Type,Line,Value,TTL,Status,MX,RecordId,UpdatedOn"
+  tccli dnspod DescribeRecordList --Domain "$domain" --Limit 3000 --output json | jq -r '
+    .RecordList // [] | sort_by(.Name, .Type, .Line) | .[] | [
+      .Name,
+      .Type,
+      .Line,
+      .Value,
+      .TTL,
+      .Status,
+      .MX,
+      .RecordId,
+      .UpdatedOn
+    ] | @csv'
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      dnspod_ls
+    else
+      dnspod_ls | column -t -s $','
+    fi
+    ;;
+  show)
+    dnspod_show "$1"
+    ;;
+  records)
+    domain=$1
+    fmt=$2
+    if [[ "$fmt" == "--csv" ]]; then
+      dnspod_records "$domain"
+    else
+      dnspod_records "$domain" | column -t -s $','
+    fi
+    ;;
+  help|-h|--help|"")
+    echo "dnspod commands (Tencent Cloud DNSPod):"
+    echo "  ls              list domains (DescribeDomainList)"
+    echo "  ls --csv        CSV output"
+    echo "  show DOMAIN     domain details (DescribeDomain)"
+    echo "  records DOMAIN  list DNS records (DescribeRecordList)"
+    echo "  records DOMAIN --csv  CSV output"
+    echo
+    echo "Examples:"
+    echo "  tcclit dnspod ls"
+    echo "  tcclit dnspod show example.com"
+    echo "  tcclit dnspod records example.com"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit dnspod help" >&2
+    exit 1
+    ;;
+esac
