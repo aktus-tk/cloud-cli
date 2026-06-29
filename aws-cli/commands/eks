@@ -6,7 +6,7 @@ shift || true
 
 eks_cluster_list_csv() {
   echo "Name,Version,Status,Endpoint,RoleArn,Created"
-  aws eks list-clusters --query 'clusters[]' --output text | while read cluster_name; do
+  aws eks list-clusters --output json | jq -r '.clusters[]' | while read cluster_name; do
     aws eks describe-cluster --name "$cluster_name" --query "cluster.[name,version,status,endpoint,roleArn,createdAt]" --output text | tr '\t' ','
   done
 }
