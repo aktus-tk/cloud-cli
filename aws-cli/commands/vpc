@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst vpc <command> [args]
+
+VPC / subnet / route table visibility
+
+commands:
+  ls [--csv]                         list VPCs
+  show <vpc-id|name>                 VPC details
+  subnets [vpc-id|name] [--csv]      list subnets (all VPCs if omitted)
+  subnet <subnet-id|name>            subnet details
+  routes [vpc-id|name] [--csv]       route tables and routes (all VPCs if omitted)
+
+examples:
+  awst vpc ls
+  awst vpc show my-vpc
+  awst vpc subnets vpc-0123456789abcdef0
+  awst vpc subnets my-vpc --csv
+  awst vpc subnet app-private-a
+  awst vpc routes my-vpc
+EOF
+}
+
+vpc_resolve_id() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "missing VPC id or name" >&2
+    return 1
+  fi
+  if [[ "$key" =~ ^vpc- ]]; then
+    echo "$key"
+    return 0
+  fi
+  local id
+  id="$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=$key" \
+    --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)"
+  if [[ -n "$id" && "$id" != "None" ]]; then
+    echo "$id"
+    return 0
+  fi
+  echo "VPC not found: $key" >&2
+  return 1
+}
+
+subnet_resolve_id() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "missing subnet id or name" >&2
+    return 1
+  fi
+  if [[ "$key" =~ ^subnet- ]]; then
+    echo "$key"
+    return 0
+  fi
+  local id
+  id="$(aws ec2 describe-subnets --filters "Name=tag:Name,Values=$key" \
+    --query 'Subnets[0].SubnetId' --output text 2>/dev/null || true)"
+  if [[ -n "$id" && "$id" != "None" ]]; then
+    echo "$id"
+    return 0
+  fi
+  echo "Subnet not found: $key" >&2
+  return 1
+}
+
+vpc_ls() {
+  local fmt="${1:-table}"
+  local query='Vpcs[].[VpcId,(Tags[?Key==`Name`].Value | [0]) || `-`,CidrBlock,State,IsDefault]'
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "VpcId,Name,CidrBlock,State,IsDefault"
+    aws ec2 describe-vpcs --query "$query" --output text | sed 's/\t/,/g'
+  else
+    echo -e "VpcId\tName\tCidrBlock\tState\tIsDefault"
+    aws ec2 describe-vpcs --query "$query" --output text | column -t -s $'\t'
+  fi
+}
+
+vpc_show() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "Usage: awst vpc show <vpc-id|name>" >&2
+    exit 1
+  fi
+  local vpc_id
+  vpc_id="$(vpc_resolve_id "$key")"
+
+  aws ec2 describe-vpcs --vpc-ids "$vpc_id" --output json | jq -r '
+    .Vpcs[0] as $v |
+    ($v.Tags // [] | map(select(.Key == "Name")) | .[0].Value // "-") as $name |
+    "VpcId: \($v.VpcId)",
+    "Name: \($name)",
+    "CidrBlock: \($v.CidrBlock)",
+    "State: \($v.State)",
+    "IsDefault: \($v.IsDefault)",
+    "InstanceTenancy: \($v.InstanceTenancy)",
+    "DHCPOptionsId: \($v.DhcpOptionsId)",
+  '
+
+  local cidr_json
+  cidr_json="$(aws ec2 describe-vpcs --vpc-ids "$vpc_id" --output json | jq -c '.Vpcs[0].CidrBlockAssociationSet // []')"
+  if [[ "$cidr_json" != "[]" ]]; then
+    echo "CidrAssociations:"
+    echo "$cidr_json" | jq -r '.[] | "  \(.CidrBlock) (\(.CidrBlockState.State))"'
+  fi
+
+  echo "Tags:"
+  aws ec2 describe-vpcs --vpc-ids "$vpc_id" --output json | jq -r '
+    (.Vpcs[0].Tags // [])[] | "  \(.Key)=\(.Value)"
+  ' || echo "  (none)"
+}
+
+vpc_subnets() {
+  local vpc_key=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="--csv"; shift ;;
+      *)
+        vpc_key="$1"
+        shift
+        ;;
+    esac
+  done
+
+  local -a args=()
+  if [[ -n "$vpc_key" ]]; then
+    local vpc_id
+    vpc_id="$(vpc_resolve_id "$vpc_key")"
+    args=(--filters "Name=vpc-id,Values=$vpc_id")
+  fi
+
+  local query='Subnets[].[SubnetId,(Tags[?Key==`Name`].Value | [0]) || `-`,VpcId,AvailabilityZone,CidrBlock,AvailableIpAddressCount,MapPublicIpOnLaunch,DefaultForAz]'
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "SubnetId,Name,VpcId,AZ,CidrBlock,AvailableIp,MapPublicIp,DefaultForAz"
+    aws ec2 describe-subnets "${args[@]}" --query "$query" --output text | sed 's/\t/,/g'
+  else
+    echo -e "SubnetId\tName\tVpcId\tAZ\tCidrBlock\tAvailableIp\tMapPublicIp\tDefaultForAz"
+    aws ec2 describe-subnets "${args[@]}" --query "$query" --output text | column -t -s $'\t'
+  fi
+}
+
+vpc_subnet_show() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "Usage: awst vpc subnet <subnet-id|name>" >&2
+    exit 1
+  fi
+  local subnet_id
+  subnet_id="$(subnet_resolve_id "$key")"
+
+  local json rt_id
+  json="$(aws ec2 describe-subnets --subnet-ids "$subnet_id" --output json)"
+  rt_id="$(aws ec2 describe-route-tables \
+    --filters "Name=association.subnet-id,Values=$subnet_id" \
+    --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || true)"
+  if [[ -z "$rt_id" || "$rt_id" == "None" ]]; then
+    rt_id="$(aws ec2 describe-route-tables \
+      --filters "Name=vpc-id,Values=$(echo "$json" | jq -r '.Subnets[0].VpcId')" "Name=association.main,Values=true" \
+      --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || true)"
+    [[ "$rt_id" == "None" ]] && rt_id="-"
+  fi
+
+  echo "$json" | jq -r --arg rt "$rt_id" '
+    .Subnets[0] as $s |
+    ($s.Tags // [] | map(select(.Key == "Name")) | .[0].Value // "-") as $name |
+    "SubnetId: \($s.SubnetId)",
+    "Name: \($name)",
+    "VpcId: \($s.VpcId)",
+    "AZ: \($s.AvailabilityZone)",
+    "CidrBlock: \($s.CidrBlock)",
+    "AvailableIpAddressCount: \($s.AvailableIpAddressCount)",
+    "MapPublicIpOnLaunch: \($s.MapPublicIpOnLaunch)",
+    "DefaultForAz: \($s.DefaultForAz)",
+    "RouteTableId: \($rt)",
+    "State: \($s.State)"
+  '
+
+  echo "Tags:"
+  echo "$json" | jq -r '(.Subnets[0].Tags // [])[] | "  \(.Key)=\(.Value)"' || echo "  (none)"
+}
+
+vpc_routes() {
+  local vpc_key=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="--csv"; shift ;;
+      *)
+        vpc_key="$1"
+        shift
+        ;;
+    esac
+  done
+
+  local -a args=()
+  if [[ -n "$vpc_key" ]]; then
+    local vpc_id
+    vpc_id="$(vpc_resolve_id "$vpc_key")"
+    args=(--filters "Name=vpc-id,Values=$vpc_id")
+  fi
+
+  local json
+  json="$(aws ec2 describe-route-tables "${args[@]}" --output json)"
+
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "RouteTableId,RouteTableName,VpcId,Main,SubnetIds,Destination,Target,State"
+    echo "$json" | jq -r '
+      def target:
+        .GatewayId // .NatGatewayId // .InstanceId // .TransitGatewayId //
+        .VpcPeeringConnectionId // .NetworkInterfaceId // .EgressOnlyInternetGatewayId //
+        .CarrierGatewayId // .LocalGatewayId // .CoreNetworkArn // "-";
+      .RouteTables[] as $rt |
+      ($rt.Tags // [] | map(select(.Key == "Name")) | .[0].Value // "-") as $name |
+      (($rt.Associations // []) | map(select(.SubnetId != null) | .SubnetId) | join(";")) as $subnets |
+      (($rt.Associations // []) | any(.Main)) as $main |
+      ($rt.Routes // [])[] |
+      [
+        $rt.RouteTableId,
+        $name,
+        $rt.VpcId,
+        $main,
+        $subnets,
+        (.DestinationCidrBlock // .DestinationPrefixListId // "-"),
+        target,
+        (.State // "active")
+      ] | @csv
+    '
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    def target:
+      .GatewayId // .NatGatewayId // .InstanceId // .TransitGatewayId //
+      .VpcPeeringConnectionId // .NetworkInterfaceId // .EgressOnlyInternetGatewayId //
+      .CarrierGatewayId // .LocalGatewayId // .CoreNetworkArn // "-";
+    .RouteTables[] as $rt |
+    ($rt.Tags // [] | map(select(.Key == "Name")) | .[0].Value // "-") as $name |
+    (($rt.Associations // []) | map(select(.SubnetId != null) | .SubnetId) | join(", ")) as $subnets |
+    (($rt.Associations // []) | any(.Main)) as $main |
+    "",
+    "RouteTableId: \($rt.RouteTableId)",
+    "Name: \($name)",
+    "VpcId: \($rt.VpcId)",
+    "Main: \($main)",
+    (if $subnets != "" then "Subnets: \($subnets)" else "Subnets: (main only)" end),
+    "Routes:",
+    (($rt.Routes // [])[] |
+      "  \(.DestinationCidrBlock // .DestinationPrefixListId // "-") -> \(target) (\(.State // "active"))"
+    )
+  '
+}
+
+case "$sub" in
+  ls|list)
+    vpc_ls "$@"
+    ;;
+  show)
+    vpc_show "$@"
+    ;;
+  subnets)
+    vpc_subnets "$@"
+    ;;
+  subnet)
+    vpc_subnet_show "$@"
+    ;;
+  routes|route)
+    vpc_routes "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown vpc command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
