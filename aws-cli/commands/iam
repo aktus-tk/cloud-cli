@@ -25,6 +25,9 @@ commands:
   user attach-policy <user-name> <policy-arn|name>  attach policy to user
   access-key show <user-name>             list access keys for user
   access-key create <user-name>           create access key for user
+  instance-profile ls [--csv]             all instance profiles
+  instance-profile show <name>            instance profile details (roles)
+  instance-profile for-role <role-name>   instance profiles for role
 
 examples:
   awst iam policy ls
@@ -41,6 +44,9 @@ examples:
   awst iam user attach-policy alice ReadOnlyAccess
   awst iam access-key show bob
   awst iam access-key create bob
+  awst iam instance-profile ls
+  awst iam instance-profile show my-instance-profile
+  awst iam instance-profile for-role my-ec2-role
 EOF
 }
 
@@ -402,6 +408,98 @@ access_key_create() {
   echo "✓ Consider using temporary credentials (STS) instead if possible"
 }
 
+# Instance Profile commands
+instance_profile_ls() {
+  local fmt="${1:-table}"
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "InstanceProfileName,Arn,Roles,CreateDate"
+    aws iam list-instance-profiles --output json | jq -r '
+      .InstanceProfiles[] |
+      [
+        .InstanceProfileName,
+        .Arn,
+        ([.Roles[]?.RoleName] | join(";")),
+        .CreateDate
+      ] | @csv'
+  else
+    echo -e "InstanceProfileName\tArn\tRoles\tCreateDate"
+    aws iam list-instance-profiles --output json | jq -r '
+      .InstanceProfiles[] |
+      [
+        .InstanceProfileName,
+        .Arn,
+        ([.Roles[]?.RoleName] | join(",")),
+        .CreateDate
+      ] | @tsv' | column -t -s $'\t'
+  fi
+}
+
+instance_profile_show() {
+  local profile_name="${1:-}"
+  if [[ -z "$profile_name" ]]; then
+    echo "Usage: awst iam instance-profile show <name>" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws iam get-instance-profile --instance-profile-name "$profile_name" --output json 2>/dev/null)" || {
+    echo "Instance profile not found: $profile_name" >&2
+    exit 1
+  }
+
+  echo "$json" | jq -r '.InstanceProfile |
+    "InstanceProfileName: \(.InstanceProfileName)",
+    "Arn: \(.Arn)",
+    "InstanceProfileId: \(.InstanceProfileId)",
+    "Path: \(.Path)",
+    "CreateDate: \(.CreateDate)",
+    ""'
+
+  local role_count
+  role_count="$(echo "$json" | jq '.InstanceProfile.Roles | length')"
+
+  if [[ "$role_count" -eq 0 ]]; then
+    echo "=== Roles ==="
+    echo "(no roles)"
+    return 0
+  fi
+
+  echo "=== Roles ==="
+  echo -e "RoleName\tArn\tCreateDate"
+  echo "$json" | jq -r '.InstanceProfile.Roles[] | [.RoleName, .Arn, .CreateDate] | @tsv' | column -t -s $'\t'
+}
+
+instance_profile_for_role() {
+  local role_name="${1:-}"
+  if [[ -z "$role_name" ]]; then
+    echo "Usage: awst iam instance-profile for-role <role-name>" >&2
+    exit 1
+  fi
+
+  local fmt="${2:-table}"
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "InstanceProfileName,Arn,CreateDate"
+    aws iam list-instance-profiles-for-role --role-name "$role_name" --output json | jq -r '
+      .InstanceProfiles[] |
+      [.InstanceProfileName, .Arn, .CreateDate] | @csv'
+  else
+    echo "Role: $role_name"
+    echo ""
+    local count
+    count="$(aws iam list-instance-profiles-for-role --role-name "$role_name" --output json | jq '.InstanceProfiles | length')"
+
+    if [[ "$count" -eq 0 ]]; then
+      echo "(no instance profiles)"
+      return 0
+    fi
+
+    echo -e "InstanceProfileName\tArn\tCreateDate"
+    aws iam list-instance-profiles-for-role --role-name "$role_name" --output json | jq -r '
+      .InstanceProfiles[] |
+      [.InstanceProfileName, .Arn, .CreateDate] | @tsv' | column -t -s $'\t'
+  fi
+}
+
 case "$sub" in
   policy)
     [[ $# -ge 1 ]] || { usage >&2; exit 1; }
@@ -488,6 +586,27 @@ case "$sub" in
         ;;
       *)
         echo "unknown access-key command: $cmd" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  instance-profile)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    cmd="$1"
+    shift || true
+    case "$cmd" in
+      ls|list)
+        instance_profile_ls "$@"
+        ;;
+      show)
+        instance_profile_show "$@"
+        ;;
+      for-role)
+        instance_profile_for_role "$@"
+        ;;
+      *)
+        echo "unknown instance-profile command: $cmd" >&2
         usage >&2
         exit 1
         ;;
