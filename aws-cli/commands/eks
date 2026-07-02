@@ -39,6 +39,71 @@ _eks_addons_for_cluster() {
   done
 }
 
+eks_addon_versions() {
+  local addon_name=""
+  local k8s_version=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --addon-name)
+        addon_name="$2"
+        shift 2
+        ;;
+      --kubernetes-version)
+        k8s_version="$2"
+        shift 2
+        ;;
+      --csv)
+        fmt="--csv"
+        shift
+        ;;
+      *)
+        if [[ -z "$addon_name" ]]; then
+          addon_name="$1"
+        elif [[ -z "$k8s_version" ]]; then
+          k8s_version="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$addon_name" || -z "$k8s_version" ]]; then
+    echo "usage: awst eks addon-versions <addon-name> <kubernetes-version> [--csv]" >&2
+    echo "       awst eks addon-versions --addon-name NAME --kubernetes-version VERSION [--csv]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws eks describe-addon-versions \
+    --addon-name "$addon_name" \
+    --kubernetes-version "$k8s_version" \
+    --output json)"
+
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "AddonName,AddonVersion,Default,Architectures"
+    echo "$json" | jq -r --arg name "$addon_name" '
+      .addons[]?.addonVersions[]? |
+      [
+        $name,
+        .addonVersion,
+        ((.compatibilities[]? | select(.defaultVersion == true) | .defaultVersion) // false),
+        (.architecture | join(";"))
+      ] | @csv'
+  else
+    echo -e "AddonName\tAddonVersion\tDefault\tArchitectures"
+    echo "$json" | jq -r --arg name "$addon_name" '
+      .addons[]?.addonVersions[]? |
+      [
+        $name,
+        .addonVersion,
+        ((.compatibilities[]? | select(.defaultVersion == true) | .defaultVersion) // false),
+        (.architecture | join(","))
+      ] | @tsv' | column -t -s $'\t'
+  fi
+}
+
 case "$cmd" in
   list-clusters)
     if [[ "$1" == "--csv" ]]; then
@@ -74,12 +139,17 @@ case "$cmd" in
       eks_addons_list_csv "$cluster_name" | column -s, -t
     fi
     ;;
+  addon-versions|describe-addon-versions)
+    eks_addon_versions "$@"
+    ;;
   *)
     echo "eks commands:"
     echo "  list-clusters                    list EKS clusters"
     echo "  list-clusters --csv              list EKS clusters as csv"
     echo "  list-addons [CLUSTER_NAME]       list EKS addons with versions (all clusters if not specified)"
     echo "  list-addons [CLUSTER_NAME] --csv list EKS addons as csv"
+    echo "  addon-versions ADDON K8S_VERSION list available addon versions (describe-addon-versions)"
+    echo "  addon-versions --addon-name NAME --kubernetes-version VERSION [--csv]"
     echo "  update-kubeconfig NAME           update kubeconfig for cluster"
     echo "  update-kubeconfig NAME --dry-run output kubeconfig to stdout"
     ;;
