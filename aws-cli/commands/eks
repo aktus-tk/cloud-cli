@@ -39,6 +39,137 @@ _eks_addons_for_cluster() {
   done
 }
 
+eks_describe_cluster() {
+  local cluster_name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name|--cluster-name)
+        cluster_name="$2"
+        shift 2
+        ;;
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$cluster_name" ]]; then
+          cluster_name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster_name" ]]; then
+    echo "usage: awst eks describe-cluster CLUSTER [--json]" >&2
+    echo "       awst eks describe-cluster --name CLUSTER [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws eks describe-cluster --name "$cluster_name" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+  else
+    echo "$json" | jq -r '
+      .cluster |
+      "Name: \(.name)",
+      "ARN: \(.arn)",
+      "Status: \(.status)",
+      "Version: \(.version)",
+      "PlatformVersion: \(.platformVersion // "-")",
+      "Endpoint: \(.endpoint)",
+      "RoleArn: \(.roleArn)",
+      "VPC: \(.resourcesVpcConfig.vpcId // "-")",
+      "Subnets: \(.resourcesVpcConfig.subnetIds | join(", "))",
+      "SecurityGroups: \(.resourcesVpcConfig.securityGroupIds | join(", "))",
+      "ClusterSecurityGroup: \(.resourcesVpcConfig.clusterSecurityGroupId // "-")",
+      "EndpointPublicAccess: \(.resourcesVpcConfig.endpointPublicAccess)",
+      "EndpointPrivateAccess: \(.resourcesVpcConfig.endpointPrivateAccess)",
+      (if (.resourcesVpcConfig.publicAccessCidrs | length) > 0 then "PublicAccessCIDRs: \(.resourcesVpcConfig.publicAccessCidrs | join(", "))" else empty end),
+      "ServiceIPv4CIDR: \(.kubernetesNetworkConfig.serviceIpv4Cidr // "-")",
+      (if .identity.oidc then "OIDCIssuer: \(.identity.oidc.issuer)" else empty end),
+      (if .encryptionConfig then "EncryptionConfig:" else empty end),
+      (.encryptionConfig[]? | "  - \(.provider.keyArn) (\(.resources | join(", ")))"),
+      (if .accessConfig then "AuthenticationMode: \(.accessConfig.authenticationMode // "-")" else empty end),
+      (if (.health.issues | length) > 0 then "HealthIssues:" else empty end),
+      (.health.issues[]? | "  - [\(.code)] \(.message)"),
+      "CreatedAt: \(.createdAt)"
+    '
+  fi
+}
+
+eks_describe_nodegroup() {
+  local cluster_name=""
+  local nodegroup_name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cluster-name)
+        cluster_name="$2"
+        shift 2
+        ;;
+      --nodegroup-name)
+        nodegroup_name="$2"
+        shift 2
+        ;;
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$cluster_name" ]]; then
+          cluster_name="$1"
+        elif [[ -z "$nodegroup_name" ]]; then
+          nodegroup_name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster_name" || -z "$nodegroup_name" ]]; then
+    echo "usage: awst eks describe-nodegroup CLUSTER NODEGROUP [--json]" >&2
+    echo "       awst eks describe-nodegroup --cluster-name CLUSTER --nodegroup-name NODEGROUP [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws eks describe-nodegroup \
+    --cluster-name "$cluster_name" \
+    --nodegroup-name "$nodegroup_name" \
+    --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+  else
+    echo "$json" | jq -r '
+      .nodegroup |
+      "NodegroupName: \(.nodegroupName)",
+      "ClusterName: \(.clusterName)",
+      "Status: \(.status)",
+      "Version: \(.version)",
+      "ReleaseVersion: \(.releaseVersion // "-")",
+      "CapacityType: \(.capacityType // "-")",
+      "InstanceTypes: \(.instanceTypes | join(", "))",
+      "AMIType: \(.amiType // "-")",
+      "Scaling: min=\(.scalingConfig.minSize) max=\(.scalingConfig.maxSize) desired=\(.scalingConfig.desiredSize)",
+      "Subnets: \(.subnets | join(", "))",
+      "NodeRole: \(.nodeRole)",
+      (if .launchTemplate then "LaunchTemplate: \(.launchTemplate.name // .launchTemplate.id) (version \(.launchTemplate.version // "default"))" else empty end),
+      (if .resources.autoScalingGroups then "AutoScalingGroups: \(.resources.autoScalingGroups | map(.name) | join(", "))" else empty end),
+      (if (.health.issues | length) > 0 then "HealthIssues:" else empty end),
+      (.health.issues[]? | "  - [\(.code)] \(.message)"),
+      "CreatedAt: \(.createdAt)",
+      "ModifiedAt: \(.modifiedAt // "-")"
+    '
+  fi
+}
+
 eks_addon_versions() {
   local addon_name=""
   local k8s_version=""
@@ -142,6 +273,12 @@ case "$cmd" in
   addon-versions|describe-addon-versions)
     eks_addon_versions "$@"
     ;;
+  describe-nodegroup)
+    eks_describe_nodegroup "$@"
+    ;;
+  describe-cluster)
+    eks_describe_cluster "$@"
+    ;;
   *)
     echo "eks commands:"
     echo "  list-clusters                    list EKS clusters"
@@ -150,6 +287,10 @@ case "$cmd" in
     echo "  list-addons [CLUSTER_NAME] --csv list EKS addons as csv"
     echo "  addon-versions ADDON K8S_VERSION list available addon versions (describe-addon-versions)"
     echo "  addon-versions --addon-name NAME --kubernetes-version VERSION [--csv]"
+    echo "  describe-cluster CLUSTER [--json]"
+    echo "  describe-cluster --name CLUSTER [--json]"
+    echo "  describe-nodegroup CLUSTER NODEGROUP [--json]"
+    echo "  describe-nodegroup --cluster-name CLUSTER --nodegroup-name NODEGROUP [--json]"
     echo "  update-kubeconfig NAME           update kubeconfig for cluster"
     echo "  update-kubeconfig NAME --dry-run output kubeconfig to stdout"
     ;;
