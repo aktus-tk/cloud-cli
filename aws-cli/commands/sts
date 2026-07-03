@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst sts <command> [args]
+
+AWS Security Token Service
+
+commands:
+  whoami [--json]              current caller identity (account, ARN, user id)
+  context [--json]             profile, region, and caller identity
+  decode <encoded-message>     decode an encoded authorization failure message
+
+examples:
+  awst sts whoami
+  awst sts whoami --json
+  awst sts context
+  awst sts decode "AQoEXAMPLE..."
+EOF
+}
+
+sts_whoami() {
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  local json
+  json="$(aws sts get-caller-identity --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    . as $id |
+    "Account: \($id.Account)",
+    "Arn: \($id.Arn)",
+    "UserId: \($id.UserId)",
+    (if $id.Arn | test(":assumed-role/") then
+      "PrincipalType: assumed-role",
+      "Role: \($id.Arn | capture(":assumed-role/(?<role>[^/]+)/") | .role)",
+      "Session: \($id.Arn | capture(":assumed-role/[^/]+/(?<session>.+)$") | .session)"
+    elif $id.Arn | test(":user/") then
+      "PrincipalType: iam-user",
+      "User: \($id.Arn | capture(":user/(?<user>.+)$") | .user)"
+    elif $id.Arn | test(":role/") then
+      "PrincipalType: iam-role",
+      "Role: \($id.Arn | capture(":role/(?<role>.+)$") | .role)"
+    elif $id.Arn | test(":federated-user/") then
+      "PrincipalType: federated-user"
+    else
+      "PrincipalType: other"
+    end)
+  '
+}
+
+sts_context() {
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  local identity_json
+  identity_json="$(aws sts get-caller-identity --output json)"
+
+  local profile="${AWS_PROFILE:-}"
+  local region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+  local session_token="unset"
+  if [[ -n "${AWS_SESSION_TOKEN:-}" ]]; then
+    session_token="set"
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n \
+      --arg profile "$profile" \
+      --arg region "$region" \
+      --arg session_token "$session_token" \
+      --argjson identity "$identity_json" \
+      '{Profile: ($profile | if . == "" then null else . end), Region: ($region | if . == "" then null else . end), SessionToken: $session_token, Identity: $identity}'
+    return 0
+  fi
+
+  echo "Profile: ${profile:--}"
+  echo "Region: ${region:--}"
+  echo "SessionToken: $session_token"
+  echo ""
+  sts_whoami
+}
+
+sts_decode() {
+  local message="${1:-}"
+  if [[ -z "$message" ]]; then
+    echo "usage: awst sts decode <encoded-message>" >&2
+    exit 1
+  fi
+
+  aws sts decode-authorization-message --encoded-message "$message" --output json | jq -r '
+    "DecodedMessage:",
+    .DecodedMessage,
+    "",
+    "EncodedMessage:",
+    .EncodedMessage
+  '
+}
+
+case "$sub" in
+  whoami|identity|me)
+    sts_whoami "$@"
+    ;;
+  context|ctx)
+    sts_context "$@"
+    ;;
+  decode)
+    sts_decode "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown sts command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
