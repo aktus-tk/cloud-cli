@@ -150,11 +150,24 @@ lt_show() {
     "InstanceType: \(.LaunchTemplateData.InstanceType // "-")",
     "KeyName: \(.LaunchTemplateData.KeyName // "-")",
     "IamInstanceProfile: \(.LaunchTemplateData.IamInstanceProfile.Arn // .LaunchTemplateData.IamInstanceProfile.Name // "-")",
-    "SecurityGroupIds: \((.LaunchTemplateData.SecurityGroupIds // []) | join(", "))",
-    "SecurityGroups: \((.LaunchTemplateData.SecurityGroups // []) | map("\(.GroupId)(\(.GroupName // "-"))") | join(", "))",
+    "SecurityGroupIds: \(
+      (
+        (.LaunchTemplateData.SecurityGroupIds // [])
+        + ((.LaunchTemplateData.SecurityGroups // []) | map(.GroupId))
+        + ([.LaunchTemplateData.NetworkInterfaces[]?.Groups[]?])
+      ) | unique | if length > 0 then join(", ") else "-" end
+    )",
+    (if (.LaunchTemplateData.SecurityGroups // [] | length) > 0 then
+      "SecurityGroups: \((.LaunchTemplateData.SecurityGroups // []) | map("\(.GroupId)(\(.GroupName // "-"))") | join(", "))"
+    else empty end),
     "SubnetId: \(.LaunchTemplateData.NetworkInterfaces[0].SubnetId // .LaunchTemplateData.SubnetId // "-")",
     "VpcId: \(.LaunchTemplateData.NetworkInterfaces[0].VpcId // "-")",
-    "AssociatePublicIp: \(.LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress // .LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress // "-")",
+    "AssociatePublicIp: \(.LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress // "-")",
+  (if (.LaunchTemplateData.NetworkInterfaces // [] | length) > 0 then
+    "NetworkInterfaces:",
+    (.LaunchTemplateData.NetworkInterfaces[] |
+      "  [device \(.DeviceIndex)] Groups: \((.Groups // []) | if length > 0 then join(", ") else "-" end), Subnet: \(.SubnetId // "-"), PublicIP: \(.AssociatePublicIpAddress // "-")")
+  else empty end),
     "EbsOptimized: \(.LaunchTemplateData.EbsOptimized // "-")",
   (if (.LaunchTemplateData.BlockDeviceMappings // [] | length) > 0 then
     "BlockDeviceMappings:",

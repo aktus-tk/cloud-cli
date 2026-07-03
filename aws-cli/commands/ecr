@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst ecr <command> [args]
+
+Amazon Elastic Container Registry
+
+commands:
+  repo ls [--csv]                    list repositories
+  repo show <name> [--json]          repository details
+  image ls <repo> [--csv]            list images in repository
+  image show <repo> <tag|digest> [--json]  image details
+
+examples:
+  awst ecr repo ls
+  awst ecr repo ls --csv
+  awst ecr repo show my-app
+  awst ecr image ls my-app
+  awst ecr image ls my-app --csv
+  awst ecr image show my-app v1.2.3
+  awst ecr image show my-app sha256:abc123...
+EOF
+}
+
+repo_ls_csv() {
+  echo "Name,Uri,CreatedAt,ScanOnPush,Encryption,TagMutability"
+  aws ecr describe-repositories \
+    --query 'repositories[].[repositoryName,repositoryUri,createdAt,imageScanningConfiguration.scanOnPush,encryptionConfiguration.encryptionType,imageTagMutability]' \
+    --output text | tr '\t' ','
+}
+
+repo_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ecr repo show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local repo_json lifecycle_json policy_json
+  repo_json="$(aws ecr describe-repositories --repository-names "$name" --output json)"
+  lifecycle_json="$(aws ecr get-lifecycle-policy --repository-name "$name" --output json 2>/dev/null || echo '{}')"
+  policy_json="$(aws ecr get-repository-policy --repository-name "$name" --output json 2>/dev/null || echo '{}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson repo "$repo_json" --argjson lifecycle "$lifecycle_json" --argjson policy "$policy_json" \
+      '{
+        Repository: $repo.repositories[0],
+        LifecyclePolicy: (if $lifecycle.lifecyclePolicyText then ($lifecycle.lifecyclePolicyText | fromjson) else null end),
+        RepositoryPolicy: (if $policy.policyText then ($policy.policyText | fromjson) else null end)
+      }'
+    return 0
+  fi
+
+  echo "$repo_json" | jq -r '
+    .repositories[0] |
+    if . == null then
+      "Repository not found: '"$name"'"
+    else
+      [
+        "Name: \(.repositoryName)",
+        "Arn: \(.repositoryArn)",
+        "Uri: \(.repositoryUri)",
+        "RegistryId: \(.registryId)",
+        "CreatedAt: \(.createdAt)",
+        "TagMutability: \(.imageTagMutability)",
+        "ScanOnPush: \(.imageScanningConfiguration.scanOnPush // false)",
+        "Encryption: \(.encryptionConfiguration.encryptionType // "AES256")",
+        (if .encryptionConfiguration.kmsKey then "KmsKey: \(.encryptionConfiguration.kmsKey)" else empty end)
+      ] | .[]
+    end
+  '
+
+  if [[ "$lifecycle_json" != '{}' ]]; then
+    echo ""
+    echo "LifecyclePolicy:"
+    echo "$lifecycle_json" | jq -r '.lifecyclePolicyText | fromjson | .rules[] |
+      "  priority \(.rulePriority): \(.description // "-") tags=\((.selection.tagStatus // "-")) count=\(.selection.countNumber // "-")"'
+  fi
+
+  if [[ "$policy_json" != '{}' ]]; then
+    echo ""
+    echo "RepositoryPolicy:"
+    echo "$policy_json" | jq -r '.policyText | fromjson | .Statement[] |
+      "  \(.Effect) Action=\((.Action | if type == "array" then join(",") else . end)) Principal=\(.Principal | tojson)"'
+  fi
+}
+
+image_ls_csv() {
+  local repo="${1:-}"
+  if [[ -z "$repo" ]]; then
+    echo "usage: awst ecr image ls <repo> [--csv]" >&2
+    exit 1
+  fi
+
+  echo "Tags,Digest,PushedAt,SizeBytes,ScanStatus"
+  aws ecr describe-images --repository-name "$repo" --output json | jq -r '
+    .imageDetails[]
+    | [
+        ((.imageTags // ["<untagged>"]) | join(";")),
+        .imageDigest,
+        .imagePushedAt,
+        (.imageSizeInBytes // 0),
+        (.imageScanStatus.status // "-")
+      ]
+    | @tsv
+  ' | tr '\t' ','
+}
+
+image_show() {
+  local repo=""
+  local image_id=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$repo" ]]; then
+          repo="$1"
+        elif [[ -z "$image_id" ]]; then
+          image_id="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$repo" || -z "$image_id" ]]; then
+    echo "usage: awst ecr image show <repo> <tag|digest> [--json]" >&2
+    exit 1
+  fi
+
+  local image_arg
+  if [[ "$image_id" == sha256:* ]]; then
+    image_arg="imageDigest=$image_id"
+  else
+    image_arg="imageTag=$image_id"
+  fi
+
+  local image_json
+  image_json="$(aws ecr describe-images --repository-name "$repo" --image-ids "$image_arg" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$image_json" | jq .
+    return 0
+  fi
+
+  echo "$image_json" | jq -r '
+    .imageDetails[0] |
+    if . == null then
+      "Image not found: '"$repo"' '"$image_id"'"
+    else
+      [
+        "Repository: '"$repo"'",
+        "Digest: \(.imageDigest)",
+        "Tags: \((.imageTags // []) | join(", "))",
+        "PushedAt: \(.imagePushedAt)",
+        "SizeBytes: \(.imageSizeInBytes // 0)",
+        "SizeMB: \((.imageSizeInBytes // 0) / 1048576 * 100 | round / 100)",
+        "ManifestMediaType: \(.imageManifestMediaType // "-")",
+        "ArtifactMediaType: \(.artifactMediaType // "-")",
+        "ScanStatus: \(.imageScanStatus.status // "-")",
+        (if .imageScanStatus.description then "ScanDescription: \(.imageScanStatus.description)" else empty end),
+        "LastRecordedPullTime: \(.lastRecordedPullTime // "-")"
+      ] | .[]
+    end
+  '
+}
+
+case "$sub" in
+  repo)
+    repo_cmd="${1:-}"
+    shift || true
+    case "$repo_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          repo_ls_csv
+        else
+          repo_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        repo_show "$@"
+        ;;
+      *)
+        echo "repository commands:"
+        echo "  ls [--csv]           list repositories"
+        echo "  show <name> [--json] repository details"
+        ;;
+    esac
+    ;;
+  image|images)
+    image_cmd="${1:-}"
+    shift || true
+    case "$image_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          image_ls_csv "$@"
+        else
+          image_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        image_show "$@"
+        ;;
+      *)
+        echo "image commands:"
+        echo "  ls <repo> [--csv]                list images"
+        echo "  show <repo> <tag|digest> [--json] image details"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown ecr command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
