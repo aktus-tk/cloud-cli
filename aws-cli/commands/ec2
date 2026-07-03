@@ -24,6 +24,157 @@ ec2_ls_csv  () {
     aws ec2 describe-instances --query "$query" --output text | tr '\t' ','
 }
 
+lt_resolve() {
+  local name="$1"
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ec2 lt <command> ..." >&2
+    return 1
+  fi
+  if [[ "$name" =~ ^lt-[0-9a-f]+$ ]]; then
+    printf '%s' "$name"
+    return 0
+  fi
+  local id
+  id="$(aws ec2 describe-launch-templates --launch-template-names "$name" \
+    --query 'LaunchTemplates[0].LaunchTemplateId' --output text 2>/dev/null || true)"
+  if [[ -n "$id" && "$id" != "None" ]]; then
+    printf '%s' "$name"
+    return 0
+  fi
+  echo "Launch template not found: $name" >&2
+  return 1
+}
+
+lt_api_args() {
+  local resolved="$1"
+  if [[ "$resolved" =~ ^lt-[0-9a-f]+$ ]]; then
+  printf '%s' "--launch-template-id $resolved"
+  else
+  printf '%s' "--launch-template-name $resolved"
+  fi
+}
+
+lt_ls_csv() {
+  echo "Name,LaunchTemplateId,LatestVersion,DefaultVersion,CreatedBy,CreateTime"
+  aws ec2 describe-launch-templates \
+    --query 'LaunchTemplates[].[LaunchTemplateName,LaunchTemplateId,LatestVersionNumber,DefaultVersionNumber,CreatedBy,CreateTime]' \
+    --output text | tr '\t' ','
+}
+
+lt_versions_csv() {
+  local name="$1"
+  local resolved
+  resolved="$(lt_resolve "$name")" || return 1
+  local api_args
+  api_args="$(lt_api_args "$resolved")"
+  echo "Version,DefaultVersion,CreateTime,CreatedBy,ImageId,InstanceType,KeyName"
+  # shellcheck disable=SC2086
+  aws ec2 describe-launch-template-versions $api_args \
+    --query 'LaunchTemplateVersions[].[VersionNumber,DefaultVersion,CreateTime,CreatedBy,LaunchTemplateData.ImageId,LaunchTemplateData.InstanceType,LaunchTemplateData.KeyName]' \
+    --output text | tr '\t' ','
+}
+
+lt_show() {
+  local name=""
+  local version=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        version="$2"
+        shift 2
+        ;;
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ec2 lt show NAME [--version N] [--json]" >&2
+    exit 1
+  fi
+
+  local resolved
+  resolved="$(lt_resolve "$name")" || exit 1
+  local api_args
+  api_args="$(lt_api_args "$resolved")"
+
+  local meta_json
+  if [[ "$resolved" =~ ^lt-[0-9a-f]+$ ]]; then
+    meta_json="$(aws ec2 describe-launch-templates --launch-template-ids "$resolved" --output json)"
+  else
+    meta_json="$(aws ec2 describe-launch-templates --launch-template-names "$resolved" --output json)"
+  fi
+
+  local versions_arg="--versions \$Default,\$Latest"
+  if [[ -n "$version" ]]; then
+    versions_arg="--versions $version"
+  fi
+
+  local version_json
+  # shellcheck disable=SC2086
+  version_json="$(aws ec2 describe-launch-template-versions $api_args $versions_arg --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson meta "$meta_json" --argjson versions "$version_json" \
+      '{LaunchTemplate: $meta.LaunchTemplates[0], Versions: $versions.LaunchTemplateVersions}'
+    return 0
+  fi
+
+  echo "$meta_json" | jq -r '
+    .LaunchTemplates[0] |
+    "Name: \(.LaunchTemplateName)",
+    "LaunchTemplateId: \(.LaunchTemplateId)",
+    "LatestVersion: \(.LatestVersionNumber)",
+    "DefaultVersion: \(.DefaultVersionNumber)",
+    "CreatedBy: \(.CreatedBy)",
+    "CreateTime: \(.CreateTime)"
+  '
+
+  echo "$version_json" | jq -r '
+    .LaunchTemplateVersions[] |
+    "",
+    "=== Version \(.VersionNumber)\(if .DefaultVersion then " (default)" else "" end) ===",
+    "CreateTime: \(.CreateTime)",
+    "CreatedBy: \(.CreatedBy // "-")",
+    "ImageId: \(.LaunchTemplateData.ImageId // "-")",
+    "InstanceType: \(.LaunchTemplateData.InstanceType // "-")",
+    "KeyName: \(.LaunchTemplateData.KeyName // "-")",
+    "IamInstanceProfile: \(.LaunchTemplateData.IamInstanceProfile.Arn // .LaunchTemplateData.IamInstanceProfile.Name // "-")",
+    "SecurityGroupIds: \((.LaunchTemplateData.SecurityGroupIds // []) | join(", "))",
+    "SecurityGroups: \((.LaunchTemplateData.SecurityGroups // []) | map("\(.GroupId)(\(.GroupName // "-"))") | join(", "))",
+    "SubnetId: \(.LaunchTemplateData.NetworkInterfaces[0].SubnetId // .LaunchTemplateData.SubnetId // "-")",
+    "VpcId: \(.LaunchTemplateData.NetworkInterfaces[0].VpcId // "-")",
+    "AssociatePublicIp: \(.LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress // .LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress // "-")",
+    "EbsOptimized: \(.LaunchTemplateData.EbsOptimized // "-")",
+  (if (.LaunchTemplateData.BlockDeviceMappings // [] | length) > 0 then
+    "BlockDeviceMappings:",
+    (.LaunchTemplateData.BlockDeviceMappings[] |
+      "  \(.DeviceName): \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-") \(.Ebs.Encrypted // false | if . then "encrypted" else "unencrypted" end)")
+  else empty end),
+  (if .LaunchTemplateData.UserData then
+    "UserData:",
+    (.LaunchTemplateData.UserData | @base64d | split("\n")[] | "  " + .)
+  else
+    "UserData: -"
+  end),
+  (if (.LaunchTemplateData.TagSpecifications // [] | length) > 0 then
+    "TagSpecifications:",
+    (.LaunchTemplateData.TagSpecifications[] |
+      "  \(.ResourceType): " + ((.Tags // []) | map("\(.Key)=\(.Value)") | join(", ")))
+  else empty end)
+  '
+}
+
 
 case "$cmd" in
   ls)
@@ -63,6 +214,37 @@ case "$cmd" in
    done
   ;;
 
+  lt)
+    lt_cmd=$1
+    shift || true
+    case "$lt_cmd" in
+      ls)
+        if [[ "$1" == "--csv" ]]; then
+          lt_ls_csv
+        else
+          lt_ls_csv | column -s, -t
+        fi
+        ;;
+      show)
+        lt_show "$@"
+        ;;
+      versions)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          lt_versions_csv "$@"
+        else
+          lt_versions_csv "$@" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "launch template commands:"
+        echo "  lt ls [--csv]              list launch templates"
+        echo "  lt show NAME [--version N] [--json]  show launch template details"
+        echo "  lt versions NAME [--csv]   list all versions"
+        ;;
+    esac
+  ;;
+
   *)
     echo "ec2 commands:"
     echo "  ls         list instances"
@@ -71,5 +253,6 @@ case "$cmd" in
     echo "  start NAME"
     echo "  stop NAME"
     echo "  sg_rules"
+    echo "  lt         launch template commands (lt ls, lt show, lt versions)"
   ;;
 esac
