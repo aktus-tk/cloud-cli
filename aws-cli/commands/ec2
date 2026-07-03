@@ -115,14 +115,14 @@ lt_show() {
     meta_json="$(aws ec2 describe-launch-templates --launch-template-names "$resolved" --output json)"
   fi
 
-  local versions_arg="--versions \$Default,\$Latest"
-  if [[ -n "$version" ]]; then
-    versions_arg="--versions $version"
-  fi
-
   local version_json
-  # shellcheck disable=SC2086
-  version_json="$(aws ec2 describe-launch-template-versions $api_args $versions_arg --output json)"
+  if [[ -n "$version" ]]; then
+    # shellcheck disable=SC2086
+    version_json="$(aws ec2 describe-launch-template-versions $api_args --versions "$version" --output json)"
+  else
+    # shellcheck disable=SC2086
+    version_json="$(aws ec2 describe-launch-template-versions $api_args --versions '$Latest' --output json)"
+  fi
 
   if [[ "$fmt" == "json" ]]; then
     jq -n --argjson meta "$meta_json" --argjson versions "$version_json" \
