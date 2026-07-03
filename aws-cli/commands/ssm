@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst ssm <command> [args]
+
+AWS Systems Manager
+
+commands:
+  instance ls [--csv]                   managed instances (SSM inventory)
+  instance show <id|ec2-name> [--json]  SSM details for an instance
+  param ls [--csv] [--path PREFIX]      parameter store listing
+  param show <name>                     parameter metadata (no value)
+  param get <name> [--decrypt] [--json] get parameter value
+  session ls [--csv]                    active SSM sessions
+
+examples:
+  awst ssm instance ls
+  awst ssm instance ls --csv
+  awst ssm instance show web01
+  awst ssm instance show i-0123456789abcdef0
+  awst ssm param ls
+  awst ssm param ls --path /myapp/
+  awst ssm param show /myapp/db/host
+  awst ssm param get /myapp/db/password --decrypt
+  awst ssm session ls
+EOF
+}
+
+ssm_resolve_instance() {
+  local spec="$1"
+  if [[ -z "$spec" ]]; then
+    echo "usage: awst ssm instance show <instance-id|ec2-name>" >&2
+    return 1
+  fi
+  if [[ "$spec" =~ ^mi-[0-9a-f]+$ ]]; then
+    printf '%s' "$spec"
+    return 0
+  fi
+  if [[ "$spec" =~ ^i-[0-9a-f]+$ ]]; then
+    printf '%s' "$spec"
+    return 0
+  fi
+  local iid
+  iid="$(aws ec2 describe-instances \
+    --filters "Name=tag:Name,Values=$spec" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null | awk '{print $1}')"
+  if [[ -n "$iid" && "$iid" != "None" ]]; then
+    printf '%s' "$iid"
+    return 0
+  fi
+  echo "instance not found: $spec" >&2
+  return 1
+}
+
+instance_ls_csv() {
+  echo "InstanceId,ComputerName,PingStatus,PlatformName,PlatformVersion,AgentVersion,IPAddress,ResourceType,LastPingDateTime"
+  aws ssm describe-instance-information \
+    --query 'InstanceInformationList[].[InstanceId,ComputerName,PingStatus,PlatformName,PlatformVersion,AgentVersion,IPAddress,ResourceType,LastPingDateTime]' \
+    --output text | tr '\t' ','
+}
+
+instance_show() {
+  local spec=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$spec" ]]; then
+          spec="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  local iid
+  iid="$(ssm_resolve_instance "$spec")" || exit 1
+
+  local info_json patch_json assoc_json
+  info_json="$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=$iid" --output json)"
+  patch_json="$(aws ssm describe-instance-patch-states --instance-ids "$iid" --output json 2>/dev/null || echo '{"InstancePatchStates":[]}')"
+  assoc_json="$(aws ssm list-associations --association-filter "key=InstanceId,value=$iid" --output json 2>/dev/null || echo '{"Associations":[]}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson info "$info_json" --argjson patch "$patch_json" --argjson assoc "$assoc_json" \
+      '{Instance: $info.InstanceInformationList[0], PatchState: $patch.InstancePatchStates[0], Associations: $assoc.Associations}'
+    return 0
+  fi
+
+  echo "$info_json" | jq -r '
+    .InstanceInformationList[0] |
+    if . == null then
+      "Instance not registered with SSM: '"$iid"'"
+    else
+      [
+        "InstanceId: \(.InstanceId)",
+        "ComputerName: \(.ComputerName // "-")",
+        "PingStatus: \(.PingStatus)",
+        "LastPingDateTime: \(.LastPingDateTime // "-")",
+        "AgentVersion: \(.AgentVersion // "-")",
+        "IsLatestVersion: \(.IsLatestVersion // "-")",
+        "PlatformType: \(.PlatformType // "-")",
+        "PlatformName: \(.PlatformName // "-")",
+        "PlatformVersion: \(.PlatformVersion // "-")",
+        "ResourceType: \(.ResourceType // "-")",
+        "IPAddress: \(.IPAddress // "-")",
+        "SourceId: \(.SourceId // "-")",
+        "SourceType: \(.SourceType // "-")"
+      ] | .[]
+    end
+  '
+
+  echo "$patch_json" | jq -r '
+    .InstancePatchStates[0] |
+    if . == null then empty else
+      "",
+      "=== Patch Compliance ===",
+      "Operation: \(.Operation // "-")",
+      "OperationStartTime: \(.OperationStartTime // "-")",
+      "OperationEndTime: \(.OperationEndTime // "-")",
+      "PatchGroup: \(.PatchGroup // "-")",
+      "BaselineId: \(.BaselineId // "-")",
+      "InstalledCount: \(.InstalledCount // 0)",
+      "InstalledOtherCount: \(.InstalledOtherCount // 0)",
+      "InstalledRejectedCount: \(.InstalledRejectedCount // 0)",
+      "MissingCount: \(.MissingCount // 0)",
+      "FailedCount: \(.FailedCount // 0)",
+      "NotApplicableCount: \(.NotApplicableCount // 0)"
+    end
+  '
+
+  echo "$assoc_json" | jq -r '
+    if (.Associations | length) == 0 then empty else
+      "",
+      "=== State Manager Associations ===",
+      (.Associations[] |
+        "- \(.Name) (\(.AssociationId)) status=\(.AssociationVersion // "-")")
+    end
+  '
+}
+
+param_ls_csv() {
+  local path="${1:-}"
+
+  if [[ -n "$path" ]]; then
+    echo "Name,Type,Version,LastModifiedDate"
+    aws ssm get-parameters-by-path --path "$path" --recursive --with-decryption \
+      --query 'Parameters[].[Name,Type,Version,LastModifiedDate]' --output text | tr '\t' ','
+  else
+    echo "Name,Type,DataType,LastModifiedDate,Description"
+    aws ssm describe-parameters \
+      --query 'Parameters[].[Name,Type,DataType,LastModifiedDate,Description]' --output text | tr '\t' ','
+  fi
+}
+
+param_show() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ssm param show <name>" >&2
+    exit 1
+  fi
+
+  aws ssm describe-parameters \
+    --parameter-filters "Key=Name,Values=$name" --output json | jq -r '
+    .Parameters[0] |
+    if . == null then
+      "Parameter not found: '"$name"'"
+    else
+      [
+        "Name: \(.Name)",
+        "ARN: \(.ARN)",
+        "Type: \(.Type)",
+        "DataType: \(.DataType // "text")",
+        "Version: \(.Version)",
+        "LastModifiedDate: \(.LastModifiedDate)",
+        "LastModifiedUser: \(.LastModifiedUser // "-")",
+        "Description: \(.Description // "-")",
+        "Tier: \(.Tier // "Standard")",
+        "KeyId: \(.KeyId // "-")",
+        "Policies: \((.Policies // []) | length) policy/policies"
+      ] | .[]
+    end
+  '
+}
+
+param_get() {
+  local name=""
+  local decrypt=0
+  local fmt="plain"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --decrypt)
+        decrypt=1
+        shift
+        ;;
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ssm param get <name> [--decrypt] [--json]" >&2
+    exit 1
+  fi
+
+  local args=(--name "$name")
+  if [[ "$decrypt" -eq 1 ]]; then
+    args+=(--with-decryption)
+  fi
+
+  local response
+  response="$(aws ssm get-parameter "${args[@]}" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$response" | jq -r '.Parameter.Value | fromjson? // .'
+    return 0
+  fi
+
+  echo "$response" | jq -r '.Parameter.Value'
+}
+
+session_ls_csv() {
+  echo "SessionId,Target,Status,StartDate,Owner,DocumentName"
+  aws ssm describe-sessions --state Active \
+    --query 'Sessions[].[SessionId,Target,Status,StartDate,Owner,DocumentName]' \
+    --output text | tr '\t' ','
+}
+
+case "$sub" in
+  instance)
+    inst_cmd="${1:-}"
+    shift || true
+    case "$inst_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          instance_ls_csv
+        else
+          instance_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        instance_show "$@"
+        ;;
+      *)
+        echo "instance commands:"
+        echo "  ls [--csv]                   list managed instances"
+        echo "  show <id|ec2-name> [--json]  show SSM instance details"
+        ;;
+    esac
+    ;;
+  param|parameter)
+    param_cmd="${1:-}"
+    shift || true
+    case "$param_cmd" in
+      ls|list)
+        csv=0
+        path=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            --path) path="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          param_ls_csv "$path"
+        else
+          param_ls_csv "$path" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        param_show "$@"
+        ;;
+      get|value)
+        param_get "$@"
+        ;;
+      *)
+        echo "parameter commands:"
+        echo "  ls [--csv] [--path PREFIX]       list parameters"
+        echo "  show <name>                      parameter metadata"
+        echo "  get <name> [--decrypt] [--json]  get parameter value"
+        ;;
+    esac
+    ;;
+  session|sessions)
+    sess_cmd="${1:-ls}"
+    shift || true
+    case "$sess_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          session_ls_csv
+        else
+          session_ls_csv | column -s, -t
+        fi
+        ;;
+      *)
+        echo "session commands:"
+        echo "  ls [--csv]   list active SSM sessions"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown ssm command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
