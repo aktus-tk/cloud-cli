@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst sqs <command> [args]
+
+Amazon Simple Queue Service
+
+commands:
+  queue ls [--csv] [--prefix PREFIX]   list queues
+  queue show <name|url> [--json]       queue details and attributes
+
+examples:
+  awst sqs queue ls
+  awst sqs queue ls --csv
+  awst sqs queue ls --prefix prod-
+  awst sqs queue show my-queue
+  awst sqs queue show https://sqs.ap-northeast-1.amazonaws.com/123/my-queue
+EOF
+}
+
+sqs_queue_name() {
+  basename "$1"
+}
+
+sqs_resolve_url() {
+  local spec="$1"
+  if [[ -z "$spec" ]]; then
+    echo "usage: awst sqs queue show <name|url>" >&2
+    return 1
+  fi
+  if [[ "$spec" == https://* ]]; then
+    printf '%s' "$spec"
+    return 0
+  fi
+  local url
+  url="$(aws sqs get-queue-url --queue-name "$spec" --query 'QueueUrl' --output text 2>/dev/null || true)"
+  if [[ -n "$url" && "$url" != "None" ]]; then
+    printf '%s' "$url"
+    return 0
+  fi
+  echo "queue not found: $spec" >&2
+  return 1
+}
+
+queue_ls_csv() {
+  local prefix=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prefix) prefix="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local args=()
+  if [[ -n "$prefix" ]]; then
+    args=(--queue-name-prefix "$prefix")
+  fi
+
+  echo "Name,Url,Messages,InFlight,Delayed,Fifo,VisibilityTimeout,RetentionPeriod"
+  aws sqs list-queues "${args[@]}" --output json | jq -r '.QueueUrls[]?' | while read -r url; do
+    [[ -n "$url" ]] || continue
+    aws sqs get-queue-attributes --queue-url "$url" --attribute-names All --output json | jq -r \
+      --arg url "$url" \
+      --arg name "$(sqs_queue_name "$url")" '
+      .Attributes as $a |
+      [
+        $name,
+        $url,
+        ($a.ApproximateNumberOfMessages // "0"),
+        ($a.ApproximateNumberOfMessagesNotVisible // "0"),
+        ($a.ApproximateNumberOfMessagesDelayed // "0"),
+        ($a.FifoQueue // "false"),
+        ($a.VisibilityTimeout // "-"),
+        ($a.MessageRetentionPeriod // "-")
+      ] | @tsv
+    ' | tr '\t' ','
+  done
+}
+
+queue_show() {
+  local spec=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$spec" ]]; then
+          spec="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  local url
+  url="$(sqs_resolve_url "$spec")" || exit 1
+
+  local attrs_json
+  attrs_json="$(aws sqs get-queue-attributes --queue-url "$url" --attribute-names All --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --arg url "$url" --argjson attrs "$attrs_json" \
+      '{QueueUrl: $url, QueueName: ($url | split("/") | last), Attributes: $attrs.Attributes}'
+    return 0
+  fi
+
+  jq -r \
+    --arg url "$url" \
+    --arg name "$(sqs_queue_name "$url")" \
+    --argjson attrs "$attrs_json" '
+    $attrs.Attributes as $a |
+    [
+      "Name: \($name)",
+      "Url: \($url)",
+      "Arn: \($a.QueueArn // "-")",
+      "FifoQueue: \($a.FifoQueue // "false")",
+      (if $a.FifoQueue == "true" then "ContentBasedDeduplication: \($a.ContentBasedDeduplication // "false")" else empty end),
+      "Messages: \($a.ApproximateNumberOfMessages // "0")",
+      "InFlight: \($a.ApproximateNumberOfMessagesNotVisible // "0")",
+      "Delayed: \($a.ApproximateNumberOfMessagesDelayed // "0")",
+      "VisibilityTimeout: \($a.VisibilityTimeout // "-") sec",
+      "MessageRetentionPeriod: \($a.MessageRetentionPeriod // "-") sec",
+      "MaximumMessageSize: \($a.MaximumMessageSize // "-") bytes",
+      "DelaySeconds: \($a.DelaySeconds // "0") sec",
+      "ReceiveMessageWaitTime: \($a.ReceiveMessageWaitTimeSeconds // "0") sec",
+      "SqsManagedSse: \($a.SqsManagedSseEnabled // "-")",
+      "KmsMasterKeyId: \($a.KmsMasterKeyId // "-")",
+      "CreatedTimestamp: \($a.CreatedTimestamp // "-")",
+      "LastModifiedTimestamp: \($a.LastModifiedTimestamp // "-")"
+    ] | .[]
+  '
+
+  echo "$attrs_json" | jq -r '
+    if .Attributes.RedrivePolicy then
+      "",
+      "RedrivePolicy:",
+      (.Attributes.RedrivePolicy | fromjson |
+        "  deadLetterTargetArn: \(.deadLetterTargetArn // "-")",
+        "  maxReceiveCount: \(.maxReceiveCount // "-")")
+    else empty end
+  '
+
+  echo "$attrs_json" | jq -r '
+    if .Attributes.Policy then
+      "",
+      "Policy:",
+      (.Attributes.Policy | fromjson | .Statement[] |
+        "  \(.Effect) Action=\((.Action | if type == "array" then join(",") else . end)) Principal=\(.Principal | tojson)")
+    else empty end
+  '
+}
+
+case "$sub" in
+  queue|queues)
+    queue_cmd="${1:-}"
+    shift || true
+    case "$queue_cmd" in
+      ls|list)
+        csv=0
+        args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          queue_ls_csv "${args[@]}"
+        else
+          queue_ls_csv "${args[@]}" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        queue_show "$@"
+        ;;
+      *)
+        echo "queue commands:"
+        echo "  ls [--csv] [--prefix PREFIX]   list queues"
+        echo "  show <name|url> [--json]       queue details"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown sqs command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
