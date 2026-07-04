@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst dynamodb <command> [args]
+
+Amazon DynamoDB
+
+commands:
+  table ls [--csv]                 list tables
+  table show <name> [--json]       table details (keys, indexes, TTL, PITR)
+  backup ls [--table NAME] [--csv] list backups
+
+examples:
+  awst dynamodb table ls
+  awst dynamodb table ls --csv
+  awst dynamodb table show my-table
+  awst dynamodb table show my-table --json
+  awst dynamodb backup ls
+  awst dynamodb backup ls --table my-table
+EOF
+}
+
+table_ls_csv() {
+  echo "Name,Status,BillingMode,ItemCount,SizeBytes,HashKey,RangeKey,StreamEnabled"
+  aws dynamodb list-tables --output json | jq -r '.TableNames[]' | while read -r name; do
+    [[ -n "$name" ]] || continue
+    aws dynamodb describe-table --table-name "$name" --output json | jq -r '
+      .Table as $t |
+      def key_name($type):
+        ([$t.KeySchema[]? | select(.KeyType == $type) | .AttributeName][0] // "-");
+      [
+        $t.TableName,
+        $t.TableStatus,
+        ($t.BillingModeSummary.BillingMode // "PROVISIONED"),
+        ($t.ItemCount // 0),
+        ($t.TableSizeBytes // 0),
+        key_name("HASH"),
+        key_name("RANGE"),
+        ($t.StreamSpecification.StreamEnabled // false)
+      ] | @tsv
+    ' | tr '\t' ','
+  done
+}
+
+table_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst dynamodb table show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local table_json ttl_json backup_json tags_json
+  table_json="$(aws dynamodb describe-table --table-name "$name" --output json)"
+  ttl_json="$(aws dynamodb describe-time-to-live --table-name "$name" --output json 2>/dev/null || echo '{}')"
+  backup_json="$(aws dynamodb describe-continuous-backups --table-name "$name" --output json 2>/dev/null || echo '{}')"
+
+  local arn
+  arn="$(echo "$table_json" | jq -r '.Table.TableArn // empty')"
+  if [[ -n "$arn" ]]; then
+    tags_json="$(aws dynamodb list-tags-of-resource --resource-arn "$arn" --output json 2>/dev/null || echo '{"Tags":[]}')"
+  else
+    tags_json='{"Tags":[]}'
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n \
+      --argjson table "$table_json" \
+      --argjson ttl "$ttl_json" \
+      --argjson backup "$backup_json" \
+      --argjson tags "$tags_json" \
+      '{
+        Table: $table.Table,
+        TimeToLive: $ttl.TimeToLiveDescription,
+        ContinuousBackups: $backup.ContinuousBackupsDescription,
+        Tags: $tags.Tags
+      }'
+    return 0
+  fi
+
+  echo "$table_json" | jq -r '
+    .Table as $t |
+    def key_name($type):
+      ([$t.KeySchema[]? | select(.KeyType == $type) | .AttributeName][0] // "-");
+    def attr_type($name):
+      ([$t.AttributeDefinitions[]? | select(.AttributeName == $name) | .AttributeType][0] // "-");
+    [
+      "Name: \($t.TableName)",
+      "Arn: \($t.TableArn)",
+      "Status: \($t.TableStatus)",
+      "CreatedAt: \($t.CreationDateTime)",
+      "BillingMode: \($t.BillingModeSummary.BillingMode // "PROVISIONED")",
+      "ItemCount: \($t.ItemCount // 0)",
+      "SizeBytes: \($t.TableSizeBytes // 0)",
+      "HashKey: \(key_name("HASH")) (\(attr_type(key_name("HASH"))))",
+      "RangeKey: \(key_name("RANGE"))\(if key_name("RANGE") != "-" then " (\(attr_type(key_name("RANGE"))))" else "" end)",
+      "TableClass: \($t.TableClassSummary.TableClass // "-")",
+      "DeletionProtection: \($t.DeletionProtectionEnabled // false)",
+      "StreamEnabled: \($t.StreamSpecification.StreamEnabled // false)",
+      (if ($t.StreamSpecification.StreamEnabled // false) then "StreamViewType: \($t.StreamSpecification.StreamViewType // "-")" else empty end),
+      (if ($t.StreamSpecification.StreamEnabled // false) then "LatestStreamArn: \($t.LatestStreamArn // "-")" else empty end),
+      "SSE: \($t.SSEDescription.Status // "DISABLED")",
+      (if $t.SSEDescription.KMSMasterKeyArn then "KMSKey: \($t.SSEDescription.KMSMasterKeyArn)" else empty end)
+    ] | .[]
+  '
+
+  if [[ "$(echo "$table_json" | jq -r '.Table.BillingModeSummary.BillingMode // "PROVISIONED"')" == "PROVISIONED" ]]; then
+    echo "$table_json" | jq -r '
+      .Table.ProvisionedThroughput |
+      "",
+      "ProvisionedThroughput:",
+      "  ReadCapacityUnits: \(.ReadCapacityUnits // 0)",
+      "  WriteCapacityUnits: \(.WriteCapacityUnits // 0)"
+    '
+  fi
+
+  echo "$table_json" | jq -r '
+    if (.Table.GlobalSecondaryIndexes // [] | length) > 0 then
+      "",
+      "GlobalSecondaryIndexes:",
+      (.Table.GlobalSecondaryIndexes[] |
+        "  \(.IndexName): status=\(.IndexStatus), keys=\([.KeySchema[] | "\(.AttributeName):\(.KeyType)"] | join(", ")), projection=\(.Projection.ProjectionType)")
+    else empty end,
+    if (.Table.LocalSecondaryIndexes // [] | length) > 0 then
+      "",
+      "LocalSecondaryIndexes:",
+      (.Table.LocalSecondaryIndexes[] |
+        "  \(.IndexName): keys=\([.KeySchema[] | "\(.AttributeName):\(.KeyType)"] | join(", ")), projection=\(.Projection.ProjectionType)")
+    else empty end
+  '
+
+  echo "$ttl_json" | jq -r '
+    if .TimeToLiveDescription then
+      "",
+      "TimeToLive:",
+      "  Status: \(.TimeToLiveDescription.TimeToLiveStatus)",
+      "  Attribute: \(.TimeToLiveDescription.AttributeName // "-")"
+    else empty end
+  '
+
+  echo "$backup_json" | jq -r '
+    if .ContinuousBackupsDescription then
+      "",
+      "ContinuousBackups:",
+      "  Status: \(.ContinuousBackupsDescription.ContinuousBackupsStatus)",
+      "  PITR: \(.ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus // "-")"
+    else empty end
+  '
+
+  echo "$tags_json" | jq -r '
+    if (.Tags // [] | length) > 0 then
+      "",
+      "Tags:",
+      (.Tags[] | "  \(.Key): \(.Value)")
+    else empty end
+  '
+}
+
+backup_ls_csv() {
+  local table=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --table)
+        table="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  echo "TableName,BackupName,BackupArn,Status,Type,SizeBytes,CreatedAt"
+  local args=()
+  if [[ -n "$table" ]]; then
+    args=(--table-name "$table")
+  fi
+  aws dynamodb list-backups "${args[@]}" --output json | jq -r '
+    .BackupSummaries[]? |
+    [
+      .TableName,
+      .BackupName,
+      .BackupArn,
+      .BackupStatus,
+      .BackupType,
+      (.BackupSizeBytes // 0),
+      .BackupCreationDateTime
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+case "$sub" in
+  table)
+    table_cmd="${1:-}"
+    shift || true
+    case "$table_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          table_ls_csv
+        else
+          echo "Name"
+          aws dynamodb list-tables --output json | jq -r '.TableNames[]' | column -t
+        fi
+        ;;
+      show|describe)
+        table_show "$@"
+        ;;
+      *)
+        echo "table commands:"
+        echo "  ls [--csv]           list tables"
+        echo "  show <name> [--json] table details"
+        ;;
+    esac
+    ;;
+  backup|backups)
+    backup_cmd="${1:-ls}"
+    shift || true
+    case "$backup_cmd" in
+      ls|list)
+        csv=0
+        args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          backup_ls_csv "${args[@]}"
+        else
+          backup_ls_csv "${args[@]}" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "backup commands:"
+        echo "  ls [--table NAME] [--csv]   list backups"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown dynamodb command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

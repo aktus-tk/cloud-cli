@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst elasticache <command> [args]
+
+Amazon ElastiCache (Redis)
+
+commands:
+  redis ls [--csv]                 list Redis replication groups
+  redis show <id> [--json]         replication group details
+  cluster ls [--csv]               list Redis cache clusters (node level)
+  cluster show <id> [--json]       cache cluster details
+
+examples:
+  awst elasticache redis ls
+  awst elasticache redis ls --csv
+  awst elasticache redis show my-redis
+  awst elasticache cluster ls
+  awst elasticache cluster show my-redis-001
+EOF
+}
+
+redis_member_cluster_json() {
+  local rg_json="$1"
+  local member
+  member="$(echo "$rg_json" | jq -r '.ReplicationGroups[0].MemberClusters[0] // empty')"
+  if [[ -z "$member" ]]; then
+    echo '{}'
+    return 0
+  fi
+  aws elasticache describe-cache-clusters \
+    --cache-cluster-id "$member" \
+    --show-cache-node-info \
+    --output json 2>/dev/null || echo '{}'
+}
+
+redis_primary_endpoint() {
+  jq -r '
+    .ReplicationGroups[0] as $rg |
+    if ($rg.ClusterEnabled // false) then
+      $rg.ConfigurationEndpoint | "\(.Address // "-"):\(.Port // "-")"
+    else
+      ($rg.NodeGroups[0].PrimaryEndpoint // {}) | "\(.Address // "-"):\(.Port // "-")"
+    end
+  '
+}
+
+redis_reader_endpoint() {
+  jq -r '
+    .ReplicationGroups[0] as $rg |
+    if ($rg.ClusterEnabled // false) then
+      "cluster-mode"
+    else
+      ($rg.NodeGroups[0].ReaderEndpoint // {}) | "\(.Address // "-"):\(.Port // "-")"
+    end
+  '
+}
+
+redis_ls_csv() {
+  echo "Id,Status,ClusterMode,Engine,EngineVersion,NodeType,PrimaryEndpoint,ReaderEndpoint,MultiAZ,Failover,EncryptionTransit,EncryptionAtRest"
+  aws elasticache describe-replication-groups --output json | jq -r '.ReplicationGroups[].ReplicationGroupId' | while read -r rg_id; do
+    [[ -n "$rg_id" ]] || continue
+    local rg_json cluster_json
+    rg_json="$(aws elasticache describe-replication-groups --replication-group-id "$rg_id" --output json)"
+    cluster_json="$(redis_member_cluster_json "$rg_json")"
+    jq -n \
+      --argjson rg "$rg_json" \
+      --argjson cluster "$cluster_json" \
+      --arg primary "$(echo "$rg_json" | redis_primary_endpoint)" \
+      --arg reader "$(echo "$rg_json" | redis_reader_endpoint)" \
+      -r '
+      ($rg.ReplicationGroups[0]) as $g |
+      ($cluster.CacheClusters[0] // {}) as $c |
+      [
+        $g.ReplicationGroupId,
+        $g.Status,
+        ($g.ClusterEnabled // false),
+        ($c.Engine // "redis"),
+        ($c.EngineVersion // "-"),
+        ($c.CacheNodeType // "-"),
+        $primary,
+        $reader,
+        ($g.MultiAZ // "-"),
+        ($g.AutomaticFailover // "-"),
+        ($g.TransitEncryptionEnabled // false),
+        ($g.AtRestEncryptionEnabled // false)
+      ] | @tsv
+    ' | tr '\t' ','
+  done
+}
+
+redis_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst elasticache redis show <id> [--json]" >&2
+    exit 1
+  fi
+
+  local rg_json cluster_json
+  rg_json="$(aws elasticache describe-replication-groups --replication-group-id "$name" --output json)"
+  cluster_json="$(redis_member_cluster_json "$rg_json")"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson rg "$rg_json" --argjson cluster "$cluster_json" \
+      '{ReplicationGroup: $rg.ReplicationGroups[0], SampleCacheCluster: $cluster.CacheClusters[0]}'
+    return 0
+  fi
+
+  echo "$rg_json" | jq -r '
+    .ReplicationGroups[0] |
+    if . == null then
+      "Replication group not found: '"$name"'"
+    else
+      [
+        "ReplicationGroupId: \(.ReplicationGroupId)",
+        "Description: \(.Description // "-")",
+        "Status: \(.Status)",
+        "ClusterMode: \(.ClusterEnabled // false)",
+        "MultiAZ: \(.MultiAZ // "-")",
+        "AutomaticFailover: \(.AutomaticFailover // "-")",
+        "SnapshotRetentionLimit: \(.SnapshotRetentionLimit // 0)",
+        "SnapshotWindow: \(.SnapshotWindow // "-")",
+        "AuthTokenEnabled: \(.AuthTokenEnabled // false)",
+        "TransitEncryption: \(.TransitEncryptionEnabled // false)",
+        "AtRestEncryption: \(.AtRestEncryptionEnabled // false)",
+        "DataTiering: \(.DataTiering // "-")",
+        "MemberClusters: \((.MemberClusters // []) | join(", "))"
+      ] | .[]
+    end
+  '
+
+  echo "$rg_json" | jq -r '
+    .ReplicationGroups[0] as $rg |
+    if $rg == null then empty else
+      "",
+      (if ($rg.ClusterEnabled // false) then
+        "ConfigurationEndpoint: \($rg.ConfigurationEndpoint.Address // "-"):\($rg.ConfigurationEndpoint.Port // "-")"
+      else
+        [
+          "PrimaryEndpoint: \($rg.NodeGroups[0].PrimaryEndpoint.Address // "-"):\($rg.NodeGroups[0].PrimaryEndpoint.Port // "-")",
+          "ReaderEndpoint: \($rg.NodeGroups[0].ReaderEndpoint.Address // "-"):\($rg.NodeGroups[0].ReaderEndpoint.Port // "-")"
+        ] | .[]
+      end)
+    end
+  '
+
+  echo "$cluster_json" | jq -r '
+    .CacheClusters[0] |
+    if . == null then empty else
+      "",
+      "Engine: \(.Engine) \(.EngineVersion)",
+      "NodeType: \(.CacheNodeType)",
+      "NumCacheNodes: \(.NumCacheNodes // 1)",
+      "PreferredMaintenanceWindow: \(.PreferredMaintenanceWindow // "-")",
+      "CacheParameterGroup: \(.CacheParameterGroup.CacheParameterGroupName // "-")",
+      "CacheSubnetGroup: \(.CacheSubnetGroupName // "-")",
+      "SecurityGroups: \((.SecurityGroups // []) | map(.SecurityGroupId) | join(", "))"
+    end
+  '
+
+  echo "$rg_json" | jq -r '
+    if (.ReplicationGroups[0].NodeGroups // [] | length) > 0 then
+      "",
+      "NodeGroups:",
+      (.ReplicationGroups[0].NodeGroups[] |
+        "  \(.NodeGroupId): status=\(.Status), slots=\(.Slots // "-"), primary=\(.PrimaryEndpoint.Address // "-"):\(.PrimaryEndpoint.Port // "-")")
+    else empty end,
+    if (.ReplicationGroups[0].LogDeliveryConfigurations // [] | length) > 0 then
+      "",
+      "LogDelivery:",
+      (.ReplicationGroups[0].LogDeliveryConfigurations[] |
+        "  \(.LogType): destination=\(.DestinationDetails.CloudWatchLogsDetails.LogGroup // .DestinationDetails.KinesisFirehoseDetails.DeliveryStream // "-"), status=\(.LogDeliveryConfigurationStatus // "-")")
+    else empty end
+  '
+}
+
+cluster_ls_csv() {
+  echo "Id,ReplicationGroup,Engine,EngineVersion,NodeType,Status,AZ,Endpoint,Port"
+  aws elasticache describe-cache-clusters --show-cache-node-info --output json | jq -r '
+    .CacheClusters[]
+    | select(.Engine == "redis")
+    | . as $c |
+    ($c.CacheNodes[0].Endpoint // {}) as $ep |
+    [
+      $c.CacheClusterId,
+      ($c.ReplicationGroupId // "-"),
+      $c.Engine,
+      ($c.EngineVersion // "-"),
+      ($c.CacheNodeType // "-"),
+      $c.CacheClusterStatus,
+      ($c.PreferredAvailabilityZone // "-"),
+      ($ep.Address // "-"),
+      ($ep.Port // "-")
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+cluster_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst elasticache cluster show <id> [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws elasticache describe-cache-clusters \
+    --cache-cluster-id "$name" \
+    --show-cache-node-info \
+    --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .CacheClusters[0] |
+    if . == null then
+      "Cache cluster not found: '"$name"'"
+    elif .Engine != "redis" then
+      "Not a Redis cluster: \(.Engine)"
+    else
+      [
+        "CacheClusterId: \(.CacheClusterId)",
+        "ReplicationGroupId: \(.ReplicationGroupId // "-")",
+        "Status: \(.CacheClusterStatus)",
+        "Engine: \(.Engine) \(.EngineVersion)",
+        "NodeType: \(.CacheNodeType)",
+        "NumCacheNodes: \(.NumCacheNodes // 1)",
+        "AZ: \(.PreferredAvailabilityZone // "-")",
+        "ParameterGroup: \(.CacheParameterGroup.CacheParameterGroupName // "-")",
+        "SubnetGroup: \(.CacheSubnetGroupName // "-")",
+        "SecurityGroups: \((.SecurityGroups // []) | map(.SecurityGroupId) | join(", "))",
+        "MaintenanceWindow: \(.PreferredMaintenanceWindow // "-")"
+      ] | .[],
+      "",
+      "CacheNodes:",
+      (.CacheNodes[] |
+        "  \(.CacheNodeId): \(.Endpoint.Address // "-"):\(.Endpoint.Port // "-") status=\(.CacheNodeStatus // "-")")
+    end
+  '
+}
+
+case "$sub" in
+  redis)
+    redis_cmd="${1:-}"
+    shift || true
+    case "$redis_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          redis_ls_csv
+        else
+          redis_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        redis_show "$@"
+        ;;
+      *)
+        echo "redis commands:"
+        echo "  ls [--csv]           list replication groups"
+        echo "  show <id> [--json]   replication group details"
+        ;;
+    esac
+    ;;
+  cluster|clusters)
+    cluster_cmd="${1:-}"
+    shift || true
+    case "$cluster_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          cluster_ls_csv
+        else
+          cluster_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        cluster_show "$@"
+        ;;
+      *)
+        echo "cluster commands:"
+        echo "  ls [--csv]           list cache clusters"
+        echo "  show <id> [--json]   cache cluster details"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown elasticache command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

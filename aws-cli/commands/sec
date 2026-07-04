@@ -7,13 +7,14 @@ shift || true
 usage() {
   cat <<EOF
 usage: awst sec <command> [args]
+       awst secrets <command> [args]   (alias)
 
 AWS Secrets Manager
 
 commands:
   ls [--csv]                      list all secrets
   show <name>                     show secret metadata (tags, rotation, etc.)
-  get <name> [--json]             get secret value (supports both string and binary secrets)
+  get <name> [--json] [--field KEY] [--version ID]  get secret value
   create <name> <options>         create a new secret
   update <name> <options>         update secret value
   delete <name> [--force]         delete secret (30-day recovery by default, --force for immediate)
@@ -31,7 +32,8 @@ examples:
   awst sec show my-secret
   awst sec get my-secret              # get string secret
   awst sec get my-db-creds --json     # parse JSON string secret
-  awst sec get my-binary-secret       # get binary secret (auto-decoded)
+  awst sec get my-db-creds --field password
+  awst sec get my-secret --version abc-123
   awst sec create my-api-key --string "abc123xyz"
   awst sec create my-db-creds --json '{"username":"admin","password":"pass123"}'
   awst sec create my-cert --file cert.pem --description "SSL certificate"
@@ -86,32 +88,82 @@ sec_show() {
 }
 
 sec_get() {
-  local name="${1:-}"
-  local format="${2:-plain}"
+  local name=""
+  local fmt="plain"
+  local version=""
+  local field=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      --binary)
+        fmt="binary"
+        shift
+        ;;
+      --version)
+        version="$2"
+        shift 2
+        ;;
+      --field)
+        field="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
 
   if [[ -z "$name" ]]; then
-    echo "Usage: awst sec get <name> [--json|--binary]" >&2
+    echo "Usage: awst sec get <name> [--json] [--field KEY] [--version ID]" >&2
     exit 1
   fi
 
-  local response
-  response=$(aws secretsmanager get-secret-value --secret-id "$name" --output json)
+  local args=(--secret-id "$name")
+  if [[ -n "$version" ]]; then
+    args+=(--version-id "$version")
+  fi
 
-  # Check if SecretBinary exists
+  local response
+  response="$(aws secretsmanager get-secret-value "${args[@]}" --output json)"
+
   local has_binary
-  has_binary=$(echo "$response" | jq -r 'has("SecretBinary")')
+  has_binary="$(echo "$response" | jq -r 'has("SecretBinary")')"
 
   if [[ "$has_binary" == "true" ]]; then
-    # Binary secret - decode base64
-    echo "$response" | jq -r '.SecretBinary' | base64 -d
-  else
-    # String secret
-    if [[ "$format" == "--json" ]]; then
-      echo "$response" | jq -r '.SecretString | fromjson'
+    if [[ "$fmt" == "binary" || "$fmt" == "plain" ]]; then
+      echo "$response" | jq -r '.SecretBinary' | base64 -d
     else
-      echo "$response" | jq -r '.SecretString'
+      echo "Error: --json/--field not supported for binary secrets" >&2
+      exit 1
     fi
+    return 0
   fi
+
+  local secret_string
+  secret_string="$(echo "$response" | jq -r '.SecretString')"
+
+  if [[ -n "$field" ]]; then
+    echo "$secret_string" | jq -r --arg field "$field" '
+      (try fromjson catch .) |
+      if type == "object" then .[$field] // empty
+      else empty end
+    '
+    return 0
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$secret_string" | jq 'try fromjson catch .'
+    return 0
+  fi
+
+  printf '%s\n' "$secret_string"
 }
 
 sec_create() {
