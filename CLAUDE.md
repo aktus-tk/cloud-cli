@@ -16,7 +16,7 @@ cloud-cli/
 │       ├── alb       # Application Load Balancer
 │       ├── cf        # CloudFront
 │       ├── iam       # Identity and Access Management
-│       ├── sec       # Secrets Manager
+│       ├── secrets   # Secrets Manager
 │       ├── lightsail # Lightsail
 │       ├── waf       # Web Application Firewall
 │       ├── sg        # Security Groups
@@ -114,12 +114,12 @@ awst iam user ls         # user 一覧
 awst iam user show NAME  # user 詳細（アタッチ済みポリシー）
 awst iam user policies NAME  # user にアタッチされたポリシー一覧
 
-awst sec ls              # シークレット一覧
-awst sec show NAME       # シークレットメタデータ詳細
-awst sec get NAME        # シークレット値取得
-awst sec create NAME --string "value"  # シークレット作成
-awst sec update NAME --string "new-value"  # シークレット更新
-awst sec delete NAME     # シークレット削除
+awst secrets ls              # シークレット一覧
+awst secrets show NAME       # シークレットメタデータ詳細
+awst secrets get NAME        # シークレット値取得
+awst secrets create NAME --string "value"  # シークレット作成
+awst secrets update NAME --string "new-value"  # シークレット更新
+awst secrets delete NAME     # シークレット削除
 
 awst eks list-clusters           # EKS クラスター一覧
 awst eks list-clusters --csv     # EKS クラスター一覧（CSV形式）
@@ -217,7 +217,7 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **access-key create NAME**: User 用のアクセスキー作成（AccessKeyId, SecretAccessKey 表示＋レコメンデーション）
 
 <<<<<<< HEAD
-### AWS Secrets Manager (`aws-cli/commands/sec`)
+### AWS Secrets Manager (`aws-cli/commands/secrets`)
 
 - **ls**: シークレット一覧（テーブル/CSV）
 - **show NAME**: シークレットメタデータ詳細（ARN、作成日、最終変更日、ローテーション設定、タグなど）

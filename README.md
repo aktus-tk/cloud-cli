@@ -115,25 +115,25 @@ awst iam access-key create NAME  # アクセスキー作成
 #### Secrets Manager
 
 ```bash
-awst sec ls                      # シークレット一覧
-awst sec ls --csv                # CSV 形式
-awst sec show NAME               # シークレットメタデータ詳細
-awst sec get NAME                # シークレット値取得
-awst sec get NAME --json         # JSON形式で取得
+awst secrets ls                      # シークレット一覧
+awst secrets ls --csv                # CSV 形式
+awst secrets show NAME               # シークレットメタデータ詳細
+awst secrets get NAME                # シークレット値取得
+awst secrets get NAME --json         # JSON形式で取得
 
 # シークレット作成
-awst sec create my-api-key --string "abc123xyz"
-awst sec create my-db-creds --json '{"username":"admin","password":"pass"}'
-awst sec create my-cert --file cert.pem --description "SSL certificate"
+awst secrets create my-api-key --string "abc123xyz"
+awst secrets create my-db-creds --json '{"username":"admin","password":"pass"}'
+awst secrets create my-cert --file cert.pem --description "SSL certificate"
 
 # シークレット更新
-awst sec update my-api-key --string "new-value"
-awst sec update my-db-creds --json '{"username":"admin","password":"newpass"}'
+awst secrets update my-api-key --string "new-value"
+awst secrets update my-db-creds --json '{"username":"admin","password":"newpass"}'
 
 # シークレット削除・復元
-awst sec delete NAME             # 30日間の復旧期間付き削除
-awst sec delete NAME --force     # 即時削除
-awst sec restore NAME            # 削除したシークレットを復元
+awst secrets delete NAME             # 30日間の復旧期間付き削除
+awst secrets delete NAME --force     # 即時削除
+awst secrets restore NAME            # 削除したシークレットを復元
 ```
 
 #### CloudFront
@@ -249,7 +249,7 @@ cloud-cli/
 │       ├── alb
 │       ├── cf
 │       ├── iam
-│       ├── sec
+│       ├── secrets
 │       ├── lightsail
 │       ├── waf
 │       ├── sg
