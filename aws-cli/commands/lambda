@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst lambda <command> [args]
+
+AWS Lambda
+
+commands:
+  function ls [--csv]                 list functions
+  function show <name> [--json]       function details
+  alias ls <name> [--csv]             list aliases for a function
+  event ls <name> [--csv]             list event source mappings
+
+examples:
+  awst lambda function ls
+  awst lambda function ls --csv
+  awst lambda function show my-function
+  awst lambda function show my-function:prod
+  awst lambda alias ls my-function
+  awst lambda event ls my-function
+EOF
+}
+
+function_ls_csv() {
+  echo "Name,Runtime,MemoryMB,TimeoutSec,PackageType,Architecture,LastModified,Role"
+  aws lambda list-functions --output json | jq -r '
+    .Functions[] |
+    [
+      .FunctionName,
+      (.Runtime // "-"),
+      (.MemorySize // "-"),
+      (.Timeout // "-"),
+      (.PackageType // "Zip"),
+      ((.Architectures // ["x86_64"])[0]),
+      .LastModified,
+      (.Role | split("/") | last)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+function_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst lambda function show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local cfg_json fn_json alias_json event_json
+  cfg_json="$(aws lambda get-function-configuration --function-name "$name" --output json)"
+  fn_json="$(aws lambda get-function --function-name "$name" --output json 2>/dev/null || echo '{}')"
+  alias_json="$(aws lambda list-aliases --function-name "$name" --output json 2>/dev/null || echo '{"Aliases":[]}')"
+  event_json="$(aws lambda list-event-source-mappings --function-name "$name" --output json 2>/dev/null || echo '{"EventSourceMappings":[]}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n \
+      --argjson cfg "$cfg_json" \
+      --argjson fn "$fn_json" \
+      --argjson aliases "$alias_json" \
+      --argjson events "$event_json" \
+      '{
+        Configuration: $cfg,
+        Code: ($fn.Code // null),
+        Aliases: $aliases.Aliases,
+        EventSourceMappings: $events.EventSourceMappings
+      }'
+    return 0
+  fi
+
+  echo "$cfg_json" | jq -r '
+    [
+      "FunctionName: \(.FunctionName)",
+      "Arn: \(.FunctionArn)",
+      "Version: \(.Version // "-")",
+      "Runtime: \(.Runtime // "-")",
+      "Handler: \(.Handler // "-")",
+      "Role: \(.Role)",
+      "MemorySize: \(.MemorySize // "-") MB",
+      "Timeout: \(.Timeout // "-") sec",
+      "PackageType: \(.PackageType // "Zip")",
+      "Architectures: \((.Architectures // []) | join(", "))",
+      "State: \(.State // "-")",
+      "LastUpdateStatus: \(.LastUpdateStatus // "-")",
+      "CodeSize: \(.CodeSize // "-") bytes",
+      "LastModified: \(.LastModified // "-")",
+      "Description: \(.Description // "-")",
+      "KMSKeyArn: \(.KMSKeyArn // "-")",
+      "Tracing: \(.TracingConfig.Mode // "-")",
+      "EphemeralStorage: \(.EphemeralStorage.Size // "-") MB"
+    ] | .[]
+  '
+
+  echo "$cfg_json" | jq -r '
+    if .VpcConfig != null and ((.VpcConfig.SubnetIds // [] | length) > 0 or (.VpcConfig.SecurityGroupIds // [] | length) > 0) then
+      "",
+      "VpcConfig:",
+      "  SubnetIds: \((.VpcConfig.SubnetIds // []) | join(", "))",
+      "  SecurityGroupIds: \((.VpcConfig.SecurityGroupIds // []) | join(", "))",
+      "  VpcId: \(.VpcConfig.VpcId // "-")"
+    else empty end,
+    if (.Layers // [] | length) > 0 then
+      "",
+      "Layers:",
+      (.Layers[] | "  \(.Arn | split(":") | last)")
+    else empty end,
+    if .DeadLetterConfig != null and .DeadLetterConfig.TargetArn then
+      "",
+      "DeadLetterConfig: \(.DeadLetterConfig.TargetArn)"
+    else empty end,
+    if .Environment != null and (.Environment.Variables // {} | length) > 0 then
+      "",
+      "Environment:",
+      (.Environment.Variables | to_entries[] | "  \(.key)=\(.value)")
+    else empty end,
+    if .FileSystemConfigs != null and (.FileSystemConfigs | length) > 0 then
+      "",
+      "FileSystemConfigs:",
+      (.FileSystemConfigs[] | "  \(.Arn) mount=\(.LocalMountPath)")
+    else empty end
+  '
+
+  echo "$fn_json" | jq -r '
+    if .Code != null then
+      "",
+      "Code:",
+      "  RepositoryType: \(.Code.RepositoryType // "-")",
+      (if .Code.ImageUri then "  ImageUri: \(.Code.ImageUri)" else empty end),
+      (if .Code.Location then "  Location: \(.Code.Location)" else empty end)
+    else empty end
+  '
+
+  echo "$alias_json" | jq -r '
+    if (.Aliases // [] | length) > 0 then
+      "",
+      "Aliases:",
+      (.Aliases[] | "  \(.Name): version=\(.FunctionVersion), arn=\(.AliasArn)")
+    else empty end
+  '
+
+  echo "$event_json" | jq -r '
+    if (.EventSourceMappings // [] | length) > 0 then
+      "",
+      "EventSourceMappings:",
+      (.EventSourceMappings[] |
+        "  \(.UUID): \(.EventSourceArn) state=\(.State // "-") batch=\(.BatchSize // "-")")
+    else empty end
+  '
+}
+
+alias_ls_csv() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "usage: awst lambda alias ls <function-name> [--csv]" >&2
+    exit 1
+  fi
+
+  echo "Name,FunctionVersion,Description,RevisionId"
+  aws lambda list-aliases --function-name "$name" --output json | jq -r '
+    .Aliases[]? |
+    [.Name, .FunctionVersion, (.Description // "-"), (.RevisionId // "-")] | @tsv
+  ' | tr '\t' ','
+}
+
+event_ls_csv() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "usage: awst lambda event ls <function-name> [--csv]" >&2
+    exit 1
+  fi
+
+  echo "UUID,EventSourceArn,State,BatchSize,StartingPosition,LastModified"
+  aws lambda list-event-source-mappings --function-name "$name" --output json | jq -r '
+    .EventSourceMappings[]? |
+    [
+      .UUID,
+      .EventSourceArn,
+      (.State // "-"),
+      (.BatchSize // "-"),
+      (.StartingPosition // "-"),
+      (.LastModified // "-")
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+case "$sub" in
+  function|fn)
+    fn_cmd="${1:-}"
+    shift || true
+    case "$fn_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          function_ls_csv
+        else
+          function_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        function_show "$@"
+        ;;
+      *)
+        echo "function commands:"
+        echo "  ls [--csv]           list functions"
+        echo "  show <name> [--json] function details"
+        ;;
+    esac
+    ;;
+  alias|aliases)
+    alias_cmd="${1:-ls}"
+    shift || true
+    case "$alias_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          alias_ls_csv "$@"
+        else
+          alias_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "alias commands:"
+        echo "  ls <function-name> [--csv]   list aliases"
+        ;;
+    esac
+    ;;
+  event|events)
+    event_cmd="${1:-ls}"
+    shift || true
+    case "$event_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          event_ls_csv "$@"
+        else
+          event_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "event commands:"
+        echo "  ls <function-name> [--csv]   list event source mappings"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown lambda command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

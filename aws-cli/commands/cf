@@ -86,13 +86,20 @@ cf_behavior() {
     exit 1
   fi
   aws cloudfront get-distribution --id "$id" --output json | jq -r '
+    def viewer_request($b):
+      (
+        ([$b.FunctionAssociations.Items[]? | select(.EventType == "viewer-request") | .FunctionARN | split("/") | last] +
+         [$b.LambdaFunctionAssociations.Items[]? | select(.EventType == "viewer-request") | .LambdaFunctionARN | capture("function:(?<name>[^:]+)") | .name])
+        | if length > 0 then join(",") else "-" end
+      );
     .Distribution.DistributionConfig as $c |
-    (["Priority", "Path", "Origin", "CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "MinTTL", "DefaultTTL", "MaxTTL"] | @tsv),
+    (["Priority", "Path", "Origin", "ViewerRequest", "CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "MinTTL", "DefaultTTL", "MaxTTL"] | @tsv),
     ((($c.CacheBehaviors.Items // [] | to_entries | map(.value + {Priority: (.key | tostring)})) + [$c.DefaultCacheBehavior + {Priority: "default"}])[]
       | [
           .Priority,
           (.PathPattern // "default"),
           .TargetOriginId,
+          viewer_request(.),
           (.CachePolicyId // "-"),
           (.OriginRequestPolicyId // "-"),
           (.ResponseHeadersPolicyId // "-"),

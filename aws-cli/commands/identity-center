@@ -1,0 +1,433 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst identity-center <command> [args]
+
+AWS IAM Identity Center (aws sso-admin / identitystore)
+
+commands:
+  instance ls [--csv]                              list Identity Center instances
+  permission-set ls [--instance ARN] [--csv]     list permission sets
+  permission-set show <name|arn> [--instance ARN] [--json]
+  assignment ls --account ID [--instance ARN] [--csv]  account assignments
+  user ls [--instance ARN] [--csv]               list users
+  group ls [--instance ARN] [--csv]                list groups
+
+options:
+  --instance ARN    Identity Center instance ARN (default: first instance)
+
+examples:
+  awst identity-center instance ls
+  awst identity-center permission-set ls
+  awst identity-center permission-set show AdministratorAccess
+  awst identity-center assignment ls --account 123456789012
+  awst identity-center user ls
+  awst identity-center group ls
+EOF
+}
+
+idc_instance_json() {
+  local instance_arn="${1:-}"
+  local json
+  json="$(aws sso-admin list-instances --output json)"
+
+  if [[ -n "$instance_arn" ]]; then
+    echo "$json" | jq -r --arg arn "$instance_arn" '.Instances[] | select(.InstanceArn == $arn)'
+    return 0
+  fi
+
+  echo "$json" | jq -r '.Instances[0] // empty'
+}
+
+idc_require_instance() {
+  local instance_arn="${1:-}"
+  local inst
+  inst="$(idc_instance_json "$instance_arn")"
+  if [[ -z "$inst" ]]; then
+    echo "IAM Identity Center instance not found" >&2
+    return 1
+  fi
+  printf '%s' "$inst"
+}
+
+idc_instance_arn() {
+  idc_require_instance "${1:-}" | jq -r '.InstanceArn'
+}
+
+idc_identity_store_id() {
+  idc_require_instance "${1:-}" | jq -r '.IdentityStoreId'
+}
+
+idc_resolve_permission_set_arn() {
+  local spec="$1"
+  local instance_arn="$2"
+
+  if [[ "$spec" =~ ^arn:aws:sso:::.*:permissionSet/ ]]; then
+    printf '%s' "$spec"
+    return 0
+  fi
+
+  local ps_arn name
+  while read -r ps_arn; do
+    [[ -n "$ps_arn" ]] || continue
+    name="$(aws sso-admin describe-permission-set \
+      --instance-arn "$instance_arn" \
+      --permission-set-arn "$ps_arn" \
+      --query 'PermissionSet.Name' --output text 2>/dev/null || true)"
+    if [[ "$name" == "$spec" ]]; then
+      printf '%s' "$ps_arn"
+      return 0
+    fi
+  done < <(aws sso-admin list-permission-sets --instance-arn "$instance_arn" \
+    --query 'PermissionSetArns[]' --output text | tr '\t' '\n')
+
+  echo "permission set not found: $spec" >&2
+  return 1
+}
+
+idc_principal_name() {
+  local store_id="$1"
+  local principal_type="$2"
+  local principal_id="$3"
+
+  case "$principal_type" in
+    USER)
+      aws identitystore describe-user \
+        --identity-store-id "$store_id" \
+        --user-id "$principal_id" \
+        --query 'UserName' --output text 2>/dev/null || printf '%s' "$principal_id"
+      ;;
+    GROUP)
+      aws identitystore describe-group \
+        --identity-store-id "$store_id" \
+        --group-id "$principal_id" \
+        --query 'DisplayName' --output text 2>/dev/null || printf '%s' "$principal_id"
+      ;;
+    *)
+      printf '%s' "$principal_id"
+      ;;
+  esac
+}
+
+idc_permission_set_name() {
+  local instance_arn="$1"
+  local ps_arn="$2"
+  aws sso-admin describe-permission-set \
+    --instance-arn "$instance_arn" \
+    --permission-set-arn "$ps_arn" \
+    --query 'PermissionSet.Name' --output text 2>/dev/null || printf '%s' "$ps_arn"
+}
+
+instance_ls_csv() {
+  echo "InstanceArn,IdentityStoreId,OwnerAccountId"
+  aws sso-admin list-instances --output json | jq -r '
+    .Instances[]? |
+    [.InstanceArn, .IdentityStoreId, .OwnerAccountId] | @tsv
+  ' | tr '\t' ','
+}
+
+permission_set_ls_csv() {
+  local instance_arn=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instance) instance_arn="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  instance_arn="$(idc_instance_arn "$instance_arn")" || exit 1
+
+  echo "Name,Arn,Description,SessionDuration,RelayState"
+  aws sso-admin list-permission-sets --instance-arn "$instance_arn" --output json | jq -r '.PermissionSetArns[]?' | while read -r ps_arn; do
+    [[ -n "$ps_arn" ]] || continue
+    aws sso-admin describe-permission-set \
+      --instance-arn "$instance_arn" \
+      --permission-set-arn "$ps_arn" \
+      --output json | jq -r '
+      .PermissionSet |
+      [.Name, .PermissionSetArn, (.Description // "-"), (.SessionDuration // "-"), (.RelayState // "-")] | @tsv
+    ' | tr '\t' ','
+  done
+}
+
+permission_set_show() {
+  local spec=""
+  local instance_arn=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instance) instance_arn="$2"; shift 2 ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$spec" ]]; then spec="$1"; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$spec" ]]; then
+    echo "usage: awst identity-center permission-set show <name|arn> [--instance ARN] [--json]" >&2
+    exit 1
+  fi
+
+  instance_arn="$(idc_instance_arn "$instance_arn")" || exit 1
+  local ps_arn
+  ps_arn="$(idc_resolve_permission_set_arn "$spec" "$instance_arn")" || exit 1
+
+  local ps_json managed_json inline_json
+  ps_json="$(aws sso-admin describe-permission-set \
+    --instance-arn "$instance_arn" \
+    --permission-set-arn "$ps_arn" \
+    --output json)"
+  managed_json="$(aws sso-admin list-managed-policies-in-permission-set \
+    --instance-arn "$instance_arn" \
+    --permission-set-arn "$ps_arn" \
+    --output json 2>/dev/null || echo '{"AttachedManagedPolicies":[]}')"
+  inline_json="$(aws sso-admin get-inline-policy-for-permission-set \
+    --instance-arn "$instance_arn" \
+    --permission-set-arn "$ps_arn" \
+    --output json 2>/dev/null || echo '{}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n \
+      --argjson ps "$ps_json" \
+      --argjson managed "$managed_json" \
+      --argjson inline "$inline_json" \
+      '{
+        PermissionSet: $ps.PermissionSet,
+        ManagedPolicies: $managed.AttachedManagedPolicies,
+        InlinePolicy: (if $inline.InlinePolicy then ($inline.InlinePolicy | fromjson) else null end)
+      }'
+    return 0
+  fi
+
+  echo "$ps_json" | jq -r '
+    .PermissionSet |
+    [
+      "Name: \(.Name)",
+      "Arn: \(.PermissionSetArn)",
+      "Description: \(.Description // "-")",
+      "SessionDuration: \(.SessionDuration // "-")",
+      "RelayState: \(.RelayState // "-")",
+      "CreatedDate: \(.CreatedDate // "-)"
+    ] | .[]
+  '
+
+  echo "$managed_json" | jq -r '
+    if (.AttachedManagedPolicies // [] | length) > 0 then
+      "",
+      "ManagedPolicies:",
+      (.AttachedManagedPolicies[] | "  \(.Name) (\(.Arn))")
+    else empty end
+  '
+
+  if [[ "$(echo "$inline_json" | jq -r '.InlinePolicy // empty')" != "" ]]; then
+    echo ""
+    echo "InlinePolicy:"
+    echo "$inline_json" | jq -r '.InlinePolicy | fromjson | tojson' | sed 's/^/  /'
+  fi
+}
+
+assignment_ls_csv() {
+  local account_id=""
+  local instance_arn=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --account) account_id="$2"; shift 2 ;;
+      --instance) instance_arn="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ -z "$account_id" ]]; then
+    echo "usage: awst identity-center assignment ls --account ACCOUNT_ID [--instance ARN] [--csv]" >&2
+    exit 1
+  fi
+
+  instance_arn="$(idc_instance_arn "$instance_arn")" || exit 1
+  local store_id
+  store_id="$(idc_identity_store_id "$instance_arn")" || exit 1
+
+  echo "AccountId,PrincipalType,PrincipalName,PrincipalId,PermissionSetName,PermissionSetArn"
+  aws sso-admin list-account-assignments \
+    --instance-arn "$instance_arn" \
+    --account-id "$account_id" \
+    --output json | jq -r '.AccountAssignments[]? | @json' | while read -r row; do
+    local ptype pid ps_arn pname principal
+    ptype="$(echo "$row" | jq -r '.PrincipalType')"
+    pid="$(echo "$row" | jq -r '.PrincipalId')"
+    ps_arn="$(echo "$row" | jq -r '.PermissionSetArn')"
+    pname="$(idc_permission_set_name "$instance_arn" "$ps_arn")"
+    principal="$(idc_principal_name "$store_id" "$ptype" "$pid")"
+    jq -n \
+      --arg account "$account_id" \
+      --arg ptype "$ptype" \
+      --arg principal "$principal" \
+      --arg pid "$pid" \
+      --arg pname "$pname" \
+      --arg ps_arn "$ps_arn" \
+      '[$account, $ptype, $principal, $pid, $pname, $ps_arn] | @tsv' | tr '\t' ','
+  done
+}
+
+user_ls_csv() {
+  local instance_arn=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instance) instance_arn="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local store_id
+  store_id="$(idc_identity_store_id "$instance_arn")" || exit 1
+
+  echo "UserName,UserId,DisplayName,Email,Active"
+  aws identitystore list-users --identity-store-id "$store_id" --output json | jq -r '
+    .Users[]? |
+    [
+      .UserName,
+      .UserId,
+      (.DisplayName // "-"),
+      (.Emails[0].Value // "-"),
+      (.Active // true)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+group_ls_csv() {
+  local instance_arn=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instance) instance_arn="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local store_id
+  store_id="$(idc_identity_store_id "$instance_arn")" || exit 1
+
+  echo "DisplayName,GroupId,Description"
+  aws identitystore list-groups --identity-store-id "$store_id" --output json | jq -r '
+    .Groups[]? |
+    [.DisplayName, .GroupId, (.Description // "-")] | @tsv
+  ' | tr '\t' ','
+}
+
+case "$sub" in
+  instance)
+    inst_cmd="${1:-ls}"
+    shift || true
+    case "$inst_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          instance_ls_csv
+        else
+          instance_ls_csv | column -s, -t
+        fi
+        ;;
+      *)
+        echo "instance commands:"
+        echo "  ls [--csv]   list Identity Center instances"
+        ;;
+    esac
+    ;;
+  permission-set|permissions|ps)
+    ps_cmd="${1:-}"
+    shift || true
+    case "$ps_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          permission_set_ls_csv "$@"
+        else
+          permission_set_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        permission_set_show "$@"
+        ;;
+      *)
+        echo "permission-set commands:"
+        echo "  ls [--instance ARN] [--csv]"
+        echo "  show <name|arn> [--instance ARN] [--json]"
+        ;;
+    esac
+    ;;
+  assignment|assign|assignments)
+    assign_cmd="${1:-ls}"
+    shift || true
+    case "$assign_cmd" in
+      ls|list)
+        csv=0
+        args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          assignment_ls_csv "${args[@]}"
+        else
+          assignment_ls_csv "${args[@]}" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "assignment commands:"
+        echo "  ls --account ACCOUNT_ID [--instance ARN] [--csv]"
+        ;;
+    esac
+    ;;
+  user|users)
+    user_cmd="${1:-ls}"
+    shift || true
+    case "$user_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          user_ls_csv "$@"
+        else
+          user_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "user commands:"
+        echo "  ls [--instance ARN] [--csv]"
+        ;;
+    esac
+    ;;
+  group|groups)
+    group_cmd="${1:-ls}"
+    shift || true
+    case "$group_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          shift || true
+          group_ls_csv "$@"
+        else
+          group_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "group commands:"
+        echo "  ls [--instance ARN] [--csv]"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown identity-center command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
