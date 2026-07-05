@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst eventbridge <command> [args]
+
+Amazon EventBridge (aws events)
+
+commands:
+  rule ls [--csv] [--bus NAME] [--prefix PREFIX]   list rules
+  rule show <name> [--bus NAME] [--json]           rule details and targets
+  bus ls [--csv]                                   list event buses
+  bus show <name> [--json]                         event bus details
+
+options:
+  --bus NAME        event bus name (default: default)
+
+examples:
+  awst eventbridge rule ls
+  awst eventbridge rule ls --csv --prefix prod-
+  awst eventbridge rule show my-rule
+  awst eventbridge rule show my-rule --bus custom-bus
+  awst eventbridge bus ls
+  awst eventbridge bus show default
+EOF
+}
+
+rule_ls_csv() {
+  local bus="default"
+  local prefix=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bus) bus="$2"; shift 2 ;;
+      --prefix) prefix="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local args=()
+  if [[ -n "$bus" && "$bus" != "default" ]]; then
+    args+=(--event-bus-name "$bus")
+  fi
+  if [[ -n "$prefix" ]]; then
+    args+=(--name-prefix "$prefix")
+  fi
+
+  echo "Name,Bus,State,EventPattern,ScheduleExpression,Description"
+  aws events list-rules "${args[@]}" --output json | jq -r --arg bus "$bus" '
+    .Rules[]? |
+    [
+      .Name,
+      $bus,
+      (.State // "-"),
+      (if .EventPattern then (.EventPattern | fromjson | tojson) else "-" end),
+      (.ScheduleExpression // "-"),
+      (.Description // "-")
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+rule_show() {
+  local name=""
+  local bus="default"
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bus) bus="$2"; shift 2 ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then name="$1"; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst eventbridge rule show <name> [--bus NAME] [--json]" >&2
+    exit 1
+  fi
+
+  local rule_args=(--name "$name")
+  local target_args=(--rule "$name")
+  if [[ -n "$bus" && "$bus" != "default" ]]; then
+    rule_args+=(--event-bus-name "$bus")
+    target_args+=(--event-bus-name "$bus")
+  fi
+
+  local rule_json targets_json
+  rule_json="$(aws events describe-rule "${rule_args[@]}" --output json)"
+  targets_json="$(aws events list-targets-by-rule "${target_args[@]}" --output json 2>/dev/null || echo '{"Targets":[]}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson rule "$rule_json" --argjson targets "$targets_json" \
+      '{Rule: $rule, Targets: $targets.Targets}'
+    return 0
+  fi
+
+  echo "$rule_json" | jq -r --arg bus "$bus" '
+    [
+      "Name: \(.Name)",
+      "Arn: \(.Arn)",
+      "EventBus: \($bus)",
+      "State: \(.State // "-")",
+      "Description: \(.Description // "-")",
+      "ScheduleExpression: \(.ScheduleExpression // "-")",
+      "EventBusName: \(.EventBusName // "default")",
+      "ManagedBy: \(.ManagedBy // "-")",
+      "CreatedBy: \(.CreatedBy // "-")"
+    ] | .[]
+  '
+
+  if [[ "$(echo "$rule_json" | jq -r '.EventPattern // empty')" != "" ]]; then
+    echo ""
+    echo "EventPattern:"
+    echo "$rule_json" | jq -r '.EventPattern | fromjson | tojson' | sed 's/^/  /'
+  fi
+
+  echo "$targets_json" | jq -r '
+    if (.Targets // [] | length) > 0 then
+      "",
+      "Targets:",
+      (.Targets[] |
+        "  [\(.Id)] \(.Arn)",
+        (if .Input then "    Input: \(.Input)" else empty end),
+        (if .InputPath then "    InputPath: \(.InputPath)" else empty end),
+        (if .RoleArn then "    RoleArn: \(.RoleArn)" else empty end),
+        (if .DeadLetterConfig then "    DeadLetterConfig: \(.DeadLetterConfig | tojson)" else empty end),
+        (if .RetryPolicy then "    RetryPolicy: \(.RetryPolicy | tojson)" else empty end),
+        "")
+    else
+      "",
+      "Targets: (none)"
+    end
+  '
+}
+
+bus_ls_csv() {
+  echo "Name,Arn,Policy"
+  aws events list-event-buses --output json | jq -r '
+    .EventBuses[]? |
+    [
+      .Name,
+      .Arn,
+      (if .Policy then "yes" else "no" end)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+bus_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then name="$1"; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst eventbridge bus show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws events describe-event-bus --name "$name" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    [
+      "Name: \(.Name)",
+      "Arn: \(.Arn)",
+      "Policy: \(if .Policy then "set" else "none" end)",
+      "CreationTime: \(.CreationTime // "-")",
+      "LastModifiedTime: \(.LastModifiedTime // "-")"
+    ] | .[]
+  '
+
+  if [[ "$(echo "$json" | jq -r '.Policy // empty')" != "" ]]; then
+    echo ""
+    echo "Policy:"
+    echo "$json" | jq -r '.Policy | fromjson | .Statement[] |
+      "  \(.Effect) Action=\((.Action | if type == "array" then join(",") else . end)) Principal=\(.Principal | tojson)"'
+  fi
+}
+
+case "$sub" in
+  rule|rules)
+    rule_cmd="${1:-}"
+    shift || true
+    case "$rule_cmd" in
+      ls|list)
+        csv=0
+        args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          rule_ls_csv "${args[@]}"
+        else
+          rule_ls_csv "${args[@]}" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        rule_show "$@"
+        ;;
+      *)
+        echo "rule commands:"
+        echo "  ls [--csv] [--bus NAME] [--prefix PREFIX]"
+        echo "  show <name> [--bus NAME] [--json]"
+        ;;
+    esac
+    ;;
+  bus|buses)
+    bus_cmd="${1:-}"
+    shift || true
+    case "$bus_cmd" in
+      ls|list)
+        if [[ "$1" == "--csv" ]]; then
+          bus_ls_csv
+        else
+          bus_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        bus_show "$@"
+        ;;
+      *)
+        echo "bus commands:"
+        echo "  ls [--csv]"
+        echo "  show <name> [--json]"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown eventbridge command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

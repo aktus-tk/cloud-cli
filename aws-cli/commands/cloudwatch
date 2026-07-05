@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst cloudwatch <command> [args]
+       awst cw <command> [args]              (alias)
+
+Amazon CloudWatch (aws cloudwatch / aws logs)
+
+commands:
+  alarm ls [--csv] [--prefix PREFIX] [--state STATE]   list alarms
+  alarm show <name> [--json]                           alarm details
+  log ls [--csv] [--prefix PREFIX]                     list log groups
+  log show <name> [--json]                             log group details
+  stream ls <log-group> [--csv]                        list log streams
+
+abbreviations:
+  alarm  -> al, a
+  log    -> lg, l
+  stream -> st, s
+
+examples:
+  awst cw al ls
+  awst cw al ls --csv --state ALARM
+  awst cw a show my-alarm
+  awst cloudwatch lg ls --prefix /aws/lambda/
+  awst cw l show /aws/lambda/my-fn
+  awst cw st ls /aws/lambda/my-fn
+EOF
+}
+
+cw_resolve_sub() {
+  case "$1" in
+    alarm|al|a) printf '%s' "alarm" ;;
+    log|lg|l) printf '%s' "log" ;;
+    stream|st|s) printf '%s' "stream" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+alarm_ls_csv() {
+  local prefix=""
+  local state=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prefix) prefix="$2"; shift 2 ;;
+      --state) state="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local args=()
+  [[ -n "$prefix" ]] && args+=(--alarm-name-prefix "$prefix")
+  [[ -n "$state" ]] && args+=(--state-value "$state")
+
+  echo "Name,State,Metric,Namespace,Comparison,Threshold,ActionsEnabled"
+  aws cloudwatch describe-alarms "${args[@]}" --output json | jq -r '
+    .MetricAlarms[]? |
+    [
+      .AlarmName,
+      .StateValue,
+      (.MetricName // "-"),
+      (.Namespace // "-"),
+      (.ComparisonOperator // "-"),
+      (.Threshold // "-" | tostring),
+      (.ActionsEnabled // false)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+alarm_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        [[ -z "$name" ]] && name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst cloudwatch alarm show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws cloudwatch describe-alarms --alarm-names "$name" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .MetricAlarms[0] |
+    if . == null then
+      "Alarm not found: '"$name"'"
+    else
+      [
+        "AlarmName: \(.AlarmName)",
+        "Arn: \(.AlarmArn)",
+        "State: \(.StateValue)",
+        "StateReason: \(.StateReason // "-")",
+        "MetricName: \(.MetricName // "-")",
+        "Namespace: \(.Namespace // "-")",
+        "ComparisonOperator: \(.ComparisonOperator // "-")",
+        "Threshold: \(.Threshold // "-")",
+        "EvaluationPeriods: \(.EvaluationPeriods // "-")",
+        "Period: \(.Period // "-") sec",
+        "Statistic: \(.Statistic // "-")",
+        "TreatMissingData: \(.TreatMissingData // "-")",
+        "ActionsEnabled: \(.ActionsEnabled // false)",
+        "AlarmActions: \((.AlarmActions // []) | join(", "))",
+        "OKActions: \((.OKActions // []) | join(", "))",
+        "InsufficientDataActions: \((.InsufficientDataActions // []) | join(", "))"
+      ] | .[]
+    end
+  '
+}
+
+log_ls_csv() {
+  local prefix=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prefix) prefix="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local args=()
+  [[ -n "$prefix" ]] && args+=(--log-group-name-prefix "$prefix")
+
+  echo "Name,RetentionDays,StoredBytes,MetricFilters,KmsKeyId"
+  aws logs describe-log-groups "${args[@]}" --output json | jq -r '
+    .logGroups[]? |
+    [
+      .logGroupName,
+      (.retentionInDays // "-"),
+      (.storedBytes // 0),
+      (.metricFilterCount // 0),
+      (.kmsKeyId // "-")
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+log_show() {
+  local name=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        [[ -z "$name" ]] && name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst cloudwatch log show <log-group-name> [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws logs describe-log-groups --log-group-name-prefix "$name" --output json)"
+  json="$(echo "$json" | jq --arg name "$name" '{logGroups: [.logGroups[]? | select(.logGroupName == $name)]}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .logGroups[0] |
+    if . == null then
+      "Log group not found: '"$name"'"
+    else
+      [
+        "LogGroupName: \(.logGroupName)",
+        "Arn: \(.arn)",
+        "RetentionDays: \(.retentionInDays // "-")",
+        "StoredBytes: \(.storedBytes // 0)",
+        "MetricFilterCount: \(.metricFilterCount // 0)",
+        "KmsKeyId: \(.kmsKeyId // "-")",
+        "CreationTime: \(.creationTime // "-")"
+      ] | .[]
+    end
+  '
+}
+
+stream_ls_csv() {
+  local group="${1:-}"
+  shift || true
+  if [[ -z "$group" ]]; then
+    echo "usage: awst cloudwatch stream ls <log-group> [--csv]" >&2
+    exit 1
+  fi
+
+  echo "StreamName,LastEventTime,LastIngestionTime,StoredBytes"
+  aws logs describe-log-streams \
+    --log-group-name "$group" \
+    --order-by LastEventTime \
+    --descending \
+    --output json | jq -r '
+    .logStreams[]? |
+    [
+      .logStreamName,
+      (.lastEventTimestamp // "-"),
+      (.lastIngestionTime // "-"),
+      (.storedBytes // 0)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+case "$(cw_resolve_sub "$sub")" in
+  alarm)
+    alarm_cmd="${1:-}"
+    shift || true
+    case "$alarm_cmd" in
+      ls|list)
+        csv=0
+        args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          alarm_ls_csv "${args[@]}"
+        else
+          alarm_ls_csv "${args[@]}" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        alarm_show "$@"
+        ;;
+      *)
+        echo "alarm commands (al, a):"
+        echo "  ls [--csv] [--prefix PREFIX] [--state STATE]"
+        echo "  show <name> [--json]"
+        ;;
+    esac
+    ;;
+  log)
+    log_cmd="${1:-}"
+    shift || true
+    case "$log_cmd" in
+      ls|list)
+        csv=0
+        args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          log_ls_csv "${args[@]}"
+        else
+          log_ls_csv "${args[@]}" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        log_show "$@"
+        ;;
+      *)
+        echo "log commands (lg, l):"
+        echo "  ls [--csv] [--prefix PREFIX]"
+        echo "  show <log-group-name> [--json]"
+        ;;
+    esac
+    ;;
+  stream)
+    stream_cmd="${1:-}"
+    shift || true
+    case "$stream_cmd" in
+      ls|list)
+        csv=0
+        group=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *)
+              if [[ -z "$group" ]]; then group="$1"; fi
+              shift
+              ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          stream_ls_csv "$group"
+        else
+          stream_ls_csv "$group" | column -s, -t
+        fi
+        ;;
+      *)
+        echo "stream commands (st, s):"
+        echo "  ls <log-group> [--csv]"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown cloudwatch command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
