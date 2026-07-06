@@ -135,13 +135,41 @@ vpc_subnets() {
     args=(--filters "Name=vpc-id,Values=$vpc_id")
   fi
 
-  local query='Subnets[].[SubnetId,(Tags[?Key==`Name`].Value | [0]) || `-`,VpcId,AvailabilityZone,CidrBlock,AvailableIpAddressCount,MapPublicIpOnLaunch,DefaultForAz]'
+  local json
+  json="$(aws ec2 describe-subnets "${args[@]}" --output json)"
+
   if [[ "$fmt" == "--csv" ]]; then
-    echo "SubnetId,Name,VpcId,AZ,CidrBlock,AvailableIp,MapPublicIp,DefaultForAz"
-    aws ec2 describe-subnets "${args[@]}" --query "$query" --output text | sed 's/\t/,/g'
+    echo "SubnetId,Name,VpcId,AZ,CidrBlock,AvailableIp,MapPublicIp,DefaultForAz,Tags"
+    echo "$json" | jq -r '
+      .Subnets[] |
+      [
+        .SubnetId,
+        ((.Tags // [] | map(select(.Key == "Name")) | .[0].Value) // "-"),
+        .VpcId,
+        .AvailabilityZone,
+        .CidrBlock,
+        .AvailableIpAddressCount,
+        .MapPublicIpOnLaunch,
+        .DefaultForAz,
+        ((.Tags // [] | map("\(.Key)=\(.Value)") | join(",")) // "-")
+      ] | @csv
+    '
   else
-    echo -e "SubnetId\tName\tVpcId\tAZ\tCidrBlock\tAvailableIp\tMapPublicIp\tDefaultForAz"
-    aws ec2 describe-subnets "${args[@]}" --query "$query" --output text | column -t -s $'\t'
+    echo -e "SubnetId\tName\tVpcId\tAZ\tCidrBlock\tAvailableIp\tMapPublicIp\tDefaultForAz\tTags"
+    echo "$json" | jq -r '
+      .Subnets[] |
+      [
+        .SubnetId,
+        ((.Tags // [] | map(select(.Key == "Name")) | .[0].Value) // "-"),
+        .VpcId,
+        .AvailabilityZone,
+        .CidrBlock,
+        .AvailableIpAddressCount,
+        .MapPublicIpOnLaunch,
+        .DefaultForAz,
+        ((.Tags // [] | map("\(.Key)=\(.Value)") | join(",")) // "-")
+      ] | @tsv
+    ' | column -t -s $'\t'
   fi
 }
 
