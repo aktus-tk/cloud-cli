@@ -24,6 +24,43 @@ ec2_ls_csv  () {
     aws ec2 describe-instances --query "$query" --output text | tr '\t' ','
 }
 
+ec2_show() {
+  local instance_id="${1:-}"
+  if [[ -z "$instance_id" ]]; then
+    echo "usage: awst ec2 show <instance-id>" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(aws ec2 describe-instances --instance-ids "$instance_id" --output json)"
+
+  echo "$json" | jq -r '
+    .Reservations[0].Instances[0] |
+    "Name: \(([.Tags[]? | select(.Key == "Name") | .Value][0]) // "-")",
+    "InstanceId: \(.InstanceId)",
+    "State: \(.State.Name)",
+    "InstanceType: \(.InstanceType)",
+    "ImageId: \(.ImageId)",
+    "Architecture: \(.Architecture)",
+    "Platform: \(.PlatformDetails // .Platform // "-")",
+    "AvailabilityZone: \(.Placement.AvailabilityZone)",
+    "VpcId: \(.VpcId // "-")",
+    "SubnetId: \(.SubnetId // "-")",
+    "PrivateIpAddress: \(.PrivateIpAddress // "-")",
+    "PublicIpAddress: \(.PublicIpAddress // "-")",
+    "PrivateDnsName: \(.PrivateDnsName // "-")",
+    "PublicDnsName: \(.PublicDnsName // "-")",
+    "KeyName: \(.KeyName // "-")",
+    "IamInstanceProfile: \(.IamInstanceProfile.Arn // "-")",
+    "LaunchTime: \(.LaunchTime)",
+    "SecurityGroups: \((.SecurityGroups // []) | map("\(.GroupName)(\(.GroupId))") | if length > 0 then join(", ") else "-" end)",
+    "Volumes:",
+    ((.BlockDeviceMappings // [])[] | "  \(.DeviceName): \(.Ebs.VolumeId)"),
+    "Tags:",
+    ((.Tags // []) | sort_by(.Key)[] | "  \(.Key)=\(.Value)")
+  '
+}
+
 lt_resolve() {
   local name="$1"
   if [[ -z "$name" ]]; then
@@ -197,6 +234,9 @@ case "$cmd" in
       ec2_ls_csv | column -s, -t
     fi
   ;;
+  show)
+    ec2_show "$@"
+  ;;
   start) aws ec2 start-instances --instance-ids $(ec2_get_id "$1") ;;
   stop)  aws ec2  stop-instances --instance-ids $(ec2_get_id "$1") ;;
 
@@ -262,6 +302,7 @@ case "$cmd" in
     echo "ec2 commands:"
     echo "  ls         list instances"
     echo "  ls --csv   list instances as csv"
+    echo "  show INSTANCE_ID"
     echo "  ssh NAME"
     echo "  start NAME"
     echo "  stop NAME"
