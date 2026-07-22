@@ -61,6 +61,55 @@ ec2_show() {
   '
 }
 
+ec2_types_csv() {
+  local -a types=()
+  local -a aws_args=()
+  local arch=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) shift ;;
+      --x86_64)
+        arch="x86_64"
+        shift
+        ;;
+      --arm64)
+        arch="arm64"
+        shift
+        ;;
+      *) types+=("$1"); shift ;;
+    esac
+  done
+
+  if [[ -n "$arch" ]]; then
+    aws_args+=(--filters "Name=processor-info.supported-architecture,Values=$arch")
+  fi
+  if [[ ${#types[@]} -gt 0 ]]; then
+    aws_args+=(--instance-types "${types[@]}")
+  fi
+
+  echo "InstanceType,Family,vCPU,MemoryGiB,Network,Arch,CurrentGen,BareMetal"
+  aws ec2 describe-instance-types "${aws_args[@]}" --output json | jq -r --arg arch "$arch" '
+    [.InstanceTypes[]
+      | select($arch == "" or ((.ProcessorInfo.SupportedArchitectures // []) | index($arch) != null))
+      | {
+          InstanceType,
+          Family: (.InstanceType | split(".")[0]),
+          vCPU: .VCpuInfo.DefaultVCpus,
+          MemoryGiB: ((.MemoryInfo.SizeInMiB // 0) / 1024),
+          Network: (.NetworkInfo.NetworkPerformance // "-"),
+          Arch: ((.ProcessorInfo.SupportedArchitectures // []) | join(";")),
+          CurrentGen: .CurrentGeneration,
+          BareMetal
+        }
+    ]
+    | sort_by(.Family, .vCPU, .MemoryGiB)
+    | .[]
+    | [.InstanceType, .Family, .vCPU, .MemoryGiB, .Network, .Arch, .CurrentGen, .BareMetal]
+    | @tsv
+  ' | tr '\t' ','
+}
+
 lt_resolve() {
   local name="$1"
   if [[ -z "$name" ]]; then
@@ -237,6 +286,13 @@ case "$cmd" in
   show)
     ec2_show "$@"
   ;;
+  types)
+    if [[ " $* " == *" --csv "* ]]; then
+      ec2_types_csv "$@"
+    else
+      ec2_types_csv "$@" | column -s, -t
+    fi
+  ;;
   start) aws ec2 start-instances --instance-ids $(ec2_get_id "$1") ;;
   stop)  aws ec2  stop-instances --instance-ids $(ec2_get_id "$1") ;;
 
@@ -303,6 +359,7 @@ case "$cmd" in
     echo "  ls         list instances"
     echo "  ls --csv   list instances as csv"
     echo "  show INSTANCE_ID"
+    echo "  types [TYPE...] [--x86_64|--arm64] [--csv]  list instance types"
     echo "  ssh NAME"
     echo "  start NAME"
     echo "  stop NAME"
