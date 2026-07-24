@@ -89,8 +89,75 @@ case "$cmd" in
     gcloud compute instance-templates describe "$@"
     ;;
   groups)
-  gcloud compute instance-groups list
-  ;;
+    g_cmd="${1:-}"
+    shift || true
+    case "$g_cmd" in
+      ""|ls|list)
+        gcloud compute instance-groups list "$@"
+        ;;
+      help|--help|-h)
+        echo "groups commands:"
+        echo "  groups                         list instance groups"
+        echo "  groups describe NAME           describe instance group"
+        echo "  groups list-instances NAME     list instances in group"
+        ;;
+      describe|show)
+        if [[ -z "${1:-}" ]]; then
+          echo "usage: gcloudt gce groups describe NAME [--zone ZONE|--region REGION]" >&2
+          exit 1
+        fi
+        name="$1"
+        shift || true
+        if [[ " $* " == *" --zone "* || " $* " == *" --region "* ]]; then
+          gcloud compute instance-groups describe "$name" "$@"
+        else
+          # resolve zone/region from list
+          loc_line="$(gcloud compute instance-groups list --filter="name=$name" \
+            --format="csv[no-heading](location,locationScope)" | head -1)"
+          if [[ -z "$loc_line" ]]; then
+            echo "instance group not found: $name" >&2
+            exit 1
+          fi
+          IFS=',' read -r location scope <<< "$loc_line"
+          if [[ "$scope" == "REGION" || "$scope" == "region" ]]; then
+            gcloud compute instance-groups describe "$name" --region="$location" "$@"
+          else
+            gcloud compute instance-groups describe "$name" --zone="$location" "$@"
+          fi
+        fi
+        ;;
+      list-instances|instances)
+        if [[ -z "${1:-}" ]]; then
+          echo "usage: gcloudt gce groups list-instances NAME [--zone ZONE|--region REGION]" >&2
+          exit 1
+        fi
+        name="$1"
+        shift || true
+        if [[ " $* " == *" --zone "* || " $* " == *" --region "* ]]; then
+          gcloud compute instance-groups list-instances "$name" "$@"
+        else
+          loc_line="$(gcloud compute instance-groups list --filter="name=$name" \
+            --format="csv[no-heading](location,locationScope)" | head -1)"
+          if [[ -z "$loc_line" ]]; then
+            echo "instance group not found: $name" >&2
+            exit 1
+          fi
+          IFS=',' read -r location scope <<< "$loc_line"
+          if [[ "$scope" == "REGION" || "$scope" == "region" ]]; then
+            gcloud compute instance-groups list-instances "$name" --region="$location" "$@"
+          else
+            gcloud compute instance-groups list-instances "$name" --zone="$location" "$@"
+          fi
+        fi
+        ;;
+      *)
+        echo "groups commands:"
+        echo "  groups                         list instance groups"
+        echo "  groups describe NAME           describe instance group"
+        echo "  groups list-instances NAME     list instances in group"
+        ;;
+    esac
+    ;;
   managed-group)
     mg_cmd=$1
     shift || true
@@ -118,7 +185,9 @@ case "$cmd" in
     echo "  types      list Rocky Linux images (name ~ rocky-linux)"
     echo "  templates  list instance templates"
     echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"
-    echo "  groups     instance-groups list"
+    echo "  groups                         list instance groups"
+    echo "  groups describe NAME           instance-groups describe"
+    echo "  groups list-instances NAME     list instances in group"
     echo "  managed-group NAME [opts]        instance-groups managed list-instances"
     echo "  managed-group describe NAME [opts]   instance-groups managed describe"
     echo "  start NAME"
