@@ -89,25 +89,30 @@ case "$cmd" in
     gcloud compute instance-templates describe "$@"
     ;;
   groups)
-    # Resolve spec → name, scope(zone|region), location. Prefer IG name; else backend-service.
+    # Resolve spec → name, scope(zone|region), location, managed.
+    # Use zone/region fields (location/locationScope are often empty in --format=value).
     groups_resolve() {
       local spec="$1"
-      local name location scope managed
+      local name zone region managed location scope
       local row
 
       row="$(gcloud compute instance-groups list --filter="name=$spec" \
-        --format='value(name,location,location_scope,isManaged)' 2>/dev/null | head -1 || true)"
-      if [[ -z "$row" ]]; then
-        row="$(gcloud compute instance-groups list --filter="name=$spec" \
-          --format='value(name,location,locationScope,isManaged)' 2>/dev/null | head -1 || true)"
-      fi
+        --format='value(name,zone,region,isManaged)' 2>/dev/null | head -1 || true)"
 
       if [[ -n "$row" ]]; then
-        IFS=$'\t' read -r name location scope managed <<< "$row"
+        IFS=$'\t' read -r name zone region managed <<< "$row"
         name="${name:-$spec}"
-        location="$(basename "${location:-}")"
-        scope="$(echo "${scope:-zone}" | tr '[:upper:]' '[:lower:]')"
         managed="$(echo "${managed:-No}" | tr '[:upper:]' '[:lower:]')"
+        if [[ -n "$zone" ]]; then
+          scope="zone"
+          location="$(basename "$zone")"
+        elif [[ -n "$region" ]]; then
+          scope="region"
+          location="$(basename "$region")"
+        else
+          echo "instance group found but zone/region empty: $spec" >&2
+          return 1
+        fi
         printf '%s\t%s\t%s\t%s\n' "$name" "$scope" "$location" "$managed"
         return 0
       fi
@@ -137,7 +142,6 @@ case "$cmd" in
       fi
       echo "resolved backend-service '$spec' → instance-group '$name' ($scope/$location)" >&2
 
-      # re-check managed flag
       managed="$(gcloud compute instance-groups list --filter="name=$name" \
         --format='value(isManaged)' 2>/dev/null | head -1 || true)"
       managed="$(echo "${managed:-No}" | tr '[:upper:]' '[:lower:]')"
