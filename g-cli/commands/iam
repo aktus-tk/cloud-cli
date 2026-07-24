@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: gcloudt iam <command> [args]
+
+identity and access management (GCP)
+
+commands:
+  role ls [--csv] [--custom]              predefined roles (default) or project custom roles
+  role show <role-id> [--json]            role details (permissions)
+  sa ls [--csv]                           service accounts
+  sa show <email>                         service account details + keys
+  sa keys <email>                         service account keys
+  policy show [PROJECT] [--json]          project IAM policy
+  policy bindings [PROJECT] [--csv]       flatten role → member bindings
+  policy members <role> [PROJECT]         members granted a role on the project
+
+examples:
+  gcloudt iam role ls
+  gcloudt iam role ls --custom
+  gcloudt iam role show roles/viewer
+  gcloudt iam role show MyCustomRole
+  gcloudt iam sa ls
+  gcloudt iam sa show my-sa@PROJECT.iam.gserviceaccount.com
+  gcloudt iam policy show
+  gcloudt iam policy bindings --csv
+  gcloudt iam policy members roles/editor
+EOF
+}
+
+current_project() {
+  local p
+  p="$(gcloud config get-value project 2>/dev/null || true)"
+  if [[ -z "$p" || "$p" == "(unset)" ]]; then
+    echo "project is not set; pass PROJECT or run: gcloud config set project PROJECT" >&2
+    return 1
+  fi
+  printf '%s' "$p"
+}
+
+# Role commands
+role_ls_csv() {
+  local custom=0
+  local -a args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) shift ;;
+      --custom) custom=1; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ "$custom" -eq 1 ]]; then
+    local project
+    project="$(current_project)" || return 1
+    args+=(--project="$project")
+  fi
+
+  echo "Name,Title,Description,Stage"
+  # shellcheck disable=SC2086
+  gcloud iam roles list "${args[@]}" \
+    --format="csv[no-heading](name,title,description,stage)"
+}
+
+role_show() {
+  local role=""
+  local fmt="table"
+  local -a describe_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      --project)
+        describe_args+=(--project="$2")
+        shift 2
+        ;;
+      --organization)
+        describe_args+=(--organization="$2")
+        shift 2
+        ;;
+      *)
+        [[ -z "$role" ]] && role="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$role" ]]; then
+    echo "usage: gcloudt iam role show <role-id> [--json] [--project PROJECT]" >&2
+    exit 1
+  fi
+
+  # projects/P/roles/R → short id + --project
+  if [[ "$role" =~ ^projects/([^/]+)/roles/(.+)$ ]]; then
+    describe_args+=(--project="${BASH_REMATCH[1]}")
+    role="${BASH_REMATCH[2]}"
+  elif [[ "$role" =~ ^organizations/([^/]+)/roles/(.+)$ ]]; then
+    describe_args+=(--organization="${BASH_REMATCH[1]}")
+    role="${BASH_REMATCH[2]}"
+  elif [[ ! "$role" =~ ^roles/ ]] && [[ ${#describe_args[@]} -eq 0 ]]; then
+    # bare custom role id → current project
+    local project
+    project="$(current_project)" || exit 1
+    describe_args+=(--project="$project")
+  fi
+
+  local json
+  json="$(gcloud iam roles describe "$role" "${describe_args[@]}" --format=json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    "Name: \(.name)",
+    "Title: \(.title // "-")",
+    "Description: \(.description // "-")",
+    "Stage: \(.stage // "-")",
+    "Deleted: \(.deleted // false)",
+    "",
+    "=== Permissions (\( (.includedPermissions // []) | length )) ===",
+    ((.includedPermissions // []) | sort[] | "  \(.)")
+  '
+}
+
+# Service account commands
+sa_ls_csv() {
+  echo "Email,DisplayName,Disabled,ProjectId"
+  gcloud iam service-accounts list \
+    --format="csv[no-heading](email,displayName,disabled,projectId)"
+}
+
+sa_show() {
+  local sa_email="${1:-}"
+  if [[ -z "$sa_email" ]]; then
+    echo "usage: gcloudt iam sa show <email>" >&2
+    exit 1
+  fi
+
+  echo "Service Account: $sa_email"
+  echo "================================================================"
+  gcloud iam service-accounts describe "$sa_email" --format=json | jq -r '
+    "Email: \(.email)",
+    "Display Name: \(.displayName // "(none)")",
+    "Project ID: \(.projectId)",
+    "Account ID: \(.uniqueId)",
+    "Disabled: \(.disabled // false)",
+    "Created: \(.createTime // "(none)")"
+  '
+  echo ""
+  echo "=== Keys ==="
+  sa_keys "$sa_email"
+}
+
+sa_keys() {
+  local sa_email="${1:-}"
+  if [[ -z "$sa_email" ]]; then
+    echo "usage: gcloudt iam sa keys <email>" >&2
+    exit 1
+  fi
+  gcloud iam service-accounts keys list --iam-account="$sa_email" \
+    --format="table(name.basename(),keyType,validAfterTime,validBeforeTime)"
+}
+
+# Policy / bindings (project IAM)
+policy_show() {
+  local project=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        [[ -z "$project" ]] && project="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$project" ]] || project="$(current_project)" || exit 1
+
+  local json
+  json="$(gcloud projects get-iam-policy "$project" --format=json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "Project: $project"
+  echo "$json" | jq -r '
+    "Version: \(.version // "-")",
+    "Etag: \(.etag // "-")",
+    "",
+    "=== Bindings (\( (.bindings // []) | length )) ===",
+    (.bindings // [])[] |
+      "",
+      "Role: \(.role)",
+      ((.members // [])[] | "  \(.)")
+  '
+}
+
+policy_bindings_csv() {
+  local project="${1:-}"
+  [[ -n "$project" ]] || project="$(current_project)" || exit 1
+
+  echo "Role,Member"
+  gcloud projects get-iam-policy "$project" --format=json | jq -r '
+    (.bindings // [])[] |
+      .role as $role |
+      (.members // [])[] |
+      [$role, .] | @tsv
+  ' | tr '\t' ','
+}
+
+policy_members() {
+  local role="${1:-}"
+  local project="${2:-}"
+  if [[ -z "$role" ]]; then
+    echo "usage: gcloudt iam policy members <role> [PROJECT]" >&2
+    exit 1
+  fi
+  [[ -n "$project" ]] || project="$(current_project)" || exit 1
+
+  echo "Project: $project"
+  echo "Role: $role"
+  echo "Members:"
+  gcloud projects get-iam-policy "$project" --format=json | jq -r --arg role "$role" '
+    (.bindings // [])[]
+    | select(.role == $role)
+    | (.members // [])[]
+    | "  \(.)"
+  '
+}
+
+case "$sub" in
+  role)
+    cmd="${1:-}"; shift || true
+    case "$cmd" in
+      ls|list)
+        if [[ " $* " == *" --csv "* ]]; then
+          role_ls_csv "$@"
+        else
+          role_ls_csv "$@" | column -s, -t
+        fi
+        ;;
+      show|describe)
+        role_show "$@"
+        ;;
+      *)
+        echo "role commands:"
+        echo "  ls [--csv] [--custom]   list predefined or project custom roles"
+        echo "  show ROLE [--json]      role details and permissions"
+        ;;
+    esac
+    ;;
+  sa|service-account)
+    cmd="${1:-}"; shift || true
+    case "$cmd" in
+      ls|list)
+        if [[ "${1:-}" == "--csv" ]]; then
+          sa_ls_csv
+        else
+          sa_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        sa_show "$@"
+        ;;
+      keys)
+        sa_keys "$@"
+        ;;
+      *)
+        echo "sa commands:"
+        echo "  ls [--csv]     list service accounts"
+        echo "  show EMAIL     service account details + keys"
+        echo "  keys EMAIL     list keys"
+        ;;
+    esac
+    ;;
+  policy)
+    cmd="${1:-}"; shift || true
+    case "$cmd" in
+      show|describe)
+        policy_show "$@"
+        ;;
+      bindings)
+        project=""
+        csv=0
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) [[ -z "$project" ]] && project="$1"; shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          policy_bindings_csv "$project"
+        else
+          policy_bindings_csv "$project" | column -s, -t
+        fi
+        ;;
+      members)
+        policy_members "$@"
+        ;;
+      *)
+        echo "policy commands:"
+        echo "  show [PROJECT] [--json]       project IAM policy"
+        echo "  bindings [PROJECT] [--csv]    flatten role → member"
+        echo "  members ROLE [PROJECT]        members for a role"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown iam command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

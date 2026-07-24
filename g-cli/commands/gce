@@ -73,6 +73,11 @@ case "$cmd" in
   images)
   gcloud compute images list --no-standard-images --format="table(name, creationTimestamp, sourceDisk, status, archiveSizeGb)"
   ;;
+  types)
+    gcloud compute images list \
+      --filter="name ~ rocky-linux" \
+      --format="table(name,family,architecture,status,creationTimestamp)"
+  ;;
   templates)
     gcloud compute instance-templates list "$@"
   ;;
@@ -110,6 +115,7 @@ case "$cmd" in
     echo "  ls --csv   list instances as csv"
     echo "  show NAME [opts]   instances describe (raw gcloud output)"
     echo "  images     list images"
+    echo "  types      list Rocky Linux images (name ~ rocky-linux)"
     echo "  templates  list instance templates"
     echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"
     echo "  groups     instance-groups list"
