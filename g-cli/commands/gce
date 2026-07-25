@@ -23,7 +23,27 @@ gce_ls_csv () {
   done
 
   # ヘッダー出力
-  echo '"index","name","status","machine_type","zone","internal_ip","external_ip","vcpu","mem","tags"'
+  echo '"index","name","status","machine_type","zone","internal_ip","external_ip","vcpu","mem","disks","tags"'
+
+  # ヘルパー関数：インスタンスのディスク情報を取得
+  get_disk_info() {
+    local name=$1 zone=$2
+
+    gcloud compute instances describe "$name" --zone="$zone" --format="json" | jq -r '.disks[] | "\(.source | split("/") | .[-1]),\(.boot)"' | while IFS=',' read -r disk_name boot; do
+      if [[ -n "$disk_name" ]]; then
+        disk_detail=$(gcloud compute disks describe "$disk_name" --zone="$zone" --format="value(sizeGb,type.scope())" 2>/dev/null || echo "")
+        if [[ -n "$disk_detail" ]]; then
+          read -r size dtype <<< "$disk_detail"
+          dtype=$(echo "$dtype" | sed 's|.*diskTypes/||')
+          if [[ "$boot" == "true" ]]; then
+            echo -n "boot:${size}G(${dtype}),"
+          else
+            echo -n "${disk_name}:${size}G(${dtype}),"
+          fi
+        fi
+      fi
+    done | sed 's/,$//'
+  }
 
   index=1
   # gcloudからCSV形式で取得（tags.list()などは自動でクォートされるが、一貫性のため手動で制御）
@@ -34,12 +54,13 @@ gce_ls_csv () {
     vcpu_mem="${type_map[$machine_type]}"
     IFS=',' read -r v_val m_val <<< "${vcpu_mem}"
 
+    # ディスク情報の取得
+    disk_info=$(get_disk_info "$name" "$zone")
+
     # すべての項目をダブルクォートで囲む
-    # tagsはgcloud側ですでにクォートされている可能性があるため、
-    # 二重クォートにならないよう、一旦生データとして扱い、ここで改めて囲む
     clean_tags=$(echo "$tags" | sed 's/^"//;s/"$//')
 
-    printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+    printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
       "$index" \
       "$name" \
       "$status" \
@@ -49,6 +70,7 @@ gce_ls_csv () {
       "${ip_ext:-}" \
       "$v_val" \
       "$m_val" \
+      "$disk_info" \
       "$clean_tags"
 
     ((index++))
@@ -73,11 +95,6 @@ case "$cmd" in
   images)
   gcloud compute images list --no-standard-images --format="table(name, creationTimestamp, sourceDisk, status, archiveSizeGb)"
   ;;
-  types)
-    gcloud compute images list \
-      --filter="name ~ rocky-linux" \
-      --format="table(name,family,architecture,status,creationTimestamp)"
-  ;;
   templates)
     gcloud compute instance-templates list "$@"
   ;;
@@ -89,167 +106,8 @@ case "$cmd" in
     gcloud compute instance-templates describe "$@"
     ;;
   groups)
-    # Resolve spec → name, scope(zone|region), location, managed.
-    # Use zone/region fields (location/locationScope are often empty in --format=value).
-    groups_resolve() {
-      local spec="$1"
-      local name zone region managed location scope
-      local row
-
-      row="$(gcloud compute instance-groups list --filter="name=$spec" \
-        --format='value(name,zone,region,isManaged)' 2>/dev/null | head -1 || true)"
-
-      if [[ -n "$row" ]]; then
-        IFS=$'\t' read -r name zone region managed <<< "$row"
-        name="${name:-$spec}"
-        managed="$(echo "${managed:-No}" | tr '[:upper:]' '[:lower:]')"
-        if [[ -n "$zone" ]]; then
-          scope="zone"
-          location="$(basename "$zone")"
-        elif [[ -n "$region" ]]; then
-          scope="region"
-          location="$(basename "$region")"
-        else
-          echo "instance group found but zone/region empty: $spec" >&2
-          return 1
-        fi
-        printf '%s\t%s\t%s\t%s\n' "$name" "$scope" "$location" "$managed"
-        return 0
-      fi
-
-      local bs_json=""
-      bs_json="$(gcloud compute backend-services describe "$spec" --global --format=json 2>/dev/null)" || \
-      bs_json="$(gcloud compute backend-services describe "$spec" --region=asia-northeast1 --format=json 2>/dev/null)" || true
-      [[ -n "$bs_json" ]] || return 1
-
-      local group_url
-      group_url="$(echo "$bs_json" | jq -r '(.backends // [])[0].group // empty')"
-      [[ -n "$group_url" ]] || {
-        echo "backend service has no backends: $spec" >&2
-        return 1
-      }
-
-      name="$(basename "$group_url")"
-      if [[ "$group_url" =~ /zones/([^/]+)/ ]]; then
-        scope="zone"
-        location="${BASH_REMATCH[1]}"
-      elif [[ "$group_url" =~ /regions/([^/]+)/ ]]; then
-        scope="region"
-        location="${BASH_REMATCH[1]}"
-      else
-        echo "could not parse instance group URL: $group_url" >&2
-        return 1
-      fi
-      echo "resolved backend-service '$spec' → instance-group '$name' ($scope/$location)" >&2
-
-      managed="$(gcloud compute instance-groups list --filter="name=$name" \
-        --format='value(isManaged)' 2>/dev/null | head -1 || true)"
-      managed="$(echo "${managed:-No}" | tr '[:upper:]' '[:lower:]')"
-      printf '%s\t%s\t%s\t%s\n' "$name" "$scope" "$location" "$managed"
-    }
-
-    groups_describe_resolved() {
-      local spec="$1"
-      shift || true
-      local name scope location managed
-
-      if [[ " $* " == *" --zone "* || " $* " == *" --region "* ]]; then
-        if gcloud compute instance-groups unmanaged describe "$spec" "$@" 2>/dev/null; then
-          return 0
-        fi
-        gcloud compute instance-groups managed describe "$spec" "$@"
-        return
-      fi
-
-      IFS=$'\t' read -r name scope location managed < <(groups_resolve "$spec") || {
-        echo "instance group (or backend-service) not found: $spec" >&2
-        echo "hint: gcloudt gce groups" >&2
-        exit 1
-      }
-      if [[ -z "$name" || -z "$location" ]]; then
-        echo "instance group (or backend-service) not found: $spec" >&2
-        exit 1
-      fi
-
-      if [[ "$managed" == "yes" || "$managed" == "true" ]]; then
-        if [[ "$scope" == "region" ]]; then
-          gcloud compute instance-groups managed describe "$name" --region="$location" "$@"
-        else
-          gcloud compute instance-groups managed describe "$name" --zone="$location" "$@"
-        fi
-      else
-        # unmanaged IGs are zonal
-        gcloud compute instance-groups unmanaged describe "$name" --zone="$location" "$@"
-      fi
-    }
-
-    groups_list_instances_resolved() {
-      local spec="$1"
-      shift || true
-      local name scope location managed
-
-      if [[ " $* " == *" --zone "* || " $* " == *" --region "* ]]; then
-        if gcloud compute instance-groups unmanaged list-instances "$spec" "$@" 2>/dev/null; then
-          return 0
-        fi
-        gcloud compute instance-groups managed list-instances "$spec" "$@"
-        return
-      fi
-
-      IFS=$'\t' read -r name scope location managed < <(groups_resolve "$spec") || {
-        echo "instance group (or backend-service) not found: $spec" >&2
-        exit 1
-      }
-      if [[ -z "$name" || -z "$location" ]]; then
-        echo "instance group (or backend-service) not found: $spec" >&2
-        exit 1
-      fi
-
-      if [[ "$managed" == "yes" || "$managed" == "true" ]]; then
-        if [[ "$scope" == "region" ]]; then
-          gcloud compute instance-groups managed list-instances "$name" --region="$location" "$@"
-        else
-          gcloud compute instance-groups managed list-instances "$name" --zone="$location" "$@"
-        fi
-      else
-        gcloud compute instance-groups unmanaged list-instances "$name" --zone="$location" "$@"
-      fi
-    }
-
-    g_cmd="${1:-}"
-    shift || true
-    case "$g_cmd" in
-      ""|ls|list)
-        gcloud compute instance-groups list "$@"
-        ;;
-      help|--help|-h)
-        echo "groups commands:"
-        echo "  groups                         list instance groups"
-        echo "  groups describe NAME           describe IG (NAME may be backend-service)"
-        echo "  groups list-instances NAME     list instances in group"
-        ;;
-      describe|show)
-        if [[ -z "${1:-}" ]]; then
-          echo "usage: gcloudt gce groups describe NAME [--zone ZONE|--region REGION]" >&2
-          exit 1
-        fi
-        groups_describe_resolved "$@"
-        ;;
-      list-instances|instances)
-        if [[ -z "${1:-}" ]]; then
-          echo "usage: gcloudt gce groups list-instances NAME [--zone ZONE|--region REGION]" >&2
-          exit 1
-        fi
-        groups_list_instances_resolved "$@"
-        ;;
-      *)
-        echo "groups commands:"
-        echo "  groups                         list instance groups"
-        echo "  groups describe NAME           describe IG (NAME may be backend-service)"
-        echo "  groups list-instances NAME     list instances in group"
-        ;;
-    esac
-    ;;
+  gcloud compute instance-groups list
+  ;;
   managed-group)
     mg_cmd=$1
     shift || true
@@ -274,12 +132,9 @@ case "$cmd" in
     echo "  ls --csv   list instances as csv"
     echo "  show NAME [opts]   instances describe (raw gcloud output)"
     echo "  images     list images"
-    echo "  types      list Rocky Linux images (name ~ rocky-linux)"
     echo "  templates  list instance templates"
     echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"
-    echo "  groups                         list instance groups"
-    echo "  groups describe NAME           instance-groups describe (or via backend-service)"
-    echo "  groups list-instances NAME     list instances in group"
+    echo "  groups     instance-groups list"
     echo "  managed-group NAME [opts]        instance-groups managed list-instances"
     echo "  managed-group describe NAME [opts]   instance-groups managed describe"
     echo "  start NAME"
