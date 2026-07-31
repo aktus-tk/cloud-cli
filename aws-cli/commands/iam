@@ -28,6 +28,8 @@ commands:
   instance-profile ls [--csv]             all instance profiles
   instance-profile show <name>            instance profile details (roles)
   instance-profile for-role <role-name>   instance profiles for role
+  oidc ls [--csv]                         all OIDC identity providers
+  oidc show <arn-or-url> [--json]         OIDC provider details
 
 examples:
   awst iam policy ls
@@ -47,6 +49,8 @@ examples:
   awst iam instance-profile ls
   awst iam instance-profile show my-instance-profile
   awst iam instance-profile for-role my-ec2-role
+  awst iam oidc ls
+  awst iam oidc show token.actions.githubusercontent.com
 EOF
 }
 
@@ -500,6 +504,142 @@ instance_profile_for_role() {
   fi
 }
 
+# OIDC Identity Provider commands
+resolve_oidc_arn() {
+  local spec="$1"
+  if [[ "$spec" =~ ^arn:aws:iam:: ]]; then
+    echo "$spec"
+    return 0
+  fi
+
+  local url="${spec#https://}"
+  url="${url#http://}"
+  url="${url%/}"
+
+  local arn
+  arn="$(aws iam list-open-id-connect-providers --output json | jq -r --arg url "$url" '
+    .OpenIDConnectProviderList[]?.Arn // empty |
+    select(endswith("/" + $url) or endswith(":" + $url))
+  ' | head -n1)"
+
+  if [[ -z "$arn" || "$arn" == "None" ]]; then
+    echo "OIDC provider not found: $spec" >&2
+    return 1
+  fi
+  echo "$arn"
+}
+
+oidc_ls() {
+  local fmt="${1:-table}"
+  local list_json
+  list_json="$(aws iam list-open-id-connect-providers --output json)"
+
+  local count
+  count="$(echo "$list_json" | jq '.OpenIDConnectProviderList | length')"
+
+  if [[ "$count" -eq 0 ]]; then
+    if [[ "$fmt" == "--csv" ]]; then
+      echo "Url,Arn,ClientIds,CreateDate"
+    else
+      echo "(no OIDC providers)"
+    fi
+    return 0
+  fi
+
+  local rows
+  rows="$(
+    while IFS= read -r arn; do
+      [[ -z "$arn" ]] && continue
+      aws iam get-open-id-connect-provider --open-id-connect-provider-arn "$arn" --output json | jq -r --arg arn "$arn" '
+        [
+          .Url,
+          $arn,
+          (.ClientIDList // [] | join(";")),
+          .CreateDate
+        ] | @tsv
+      '
+    done < <(echo "$list_json" | jq -r '.OpenIDConnectProviderList[]?.Arn // empty')
+  )"
+
+  if [[ "$fmt" == "--csv" ]]; then
+    echo "Url,Arn,ClientIds,CreateDate"
+    echo "$rows" | tr '\t' ','
+  else
+    echo -e "Url\tArn\tClientIds\tCreateDate"
+    echo "$rows" | column -t -s $'\t'
+  fi
+}
+
+oidc_show() {
+  local spec=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        [[ -z "$spec" ]] && spec="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$spec" ]]; then
+    echo "Usage: awst iam oidc show <arn-or-url> [--json]" >&2
+    exit 1
+  fi
+
+  local arn
+  arn="$(resolve_oidc_arn "$spec")" || exit 1
+
+  local json
+  json="$(aws iam get-open-id-connect-provider --open-id-connect-provider-arn "$arn" --output json 2>/dev/null)" || {
+    echo "OIDC provider not found: $spec" >&2
+    exit 1
+  }
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq --arg arn "$arn" '. + {Arn: $arn}'
+    return 0
+  fi
+
+  echo "$json" | jq -r --arg arn "$arn" '
+    "Arn: \($arn)",
+    "Url: \(.Url)",
+    "CreateDate: \(.CreateDate)",
+    ""
+  '
+
+  echo "=== Client IDs ==="
+  local client_count
+  client_count="$(echo "$json" | jq '.ClientIDList | length')"
+  if [[ "$client_count" -eq 0 ]]; then
+    echo "(none)"
+  else
+    echo "$json" | jq -r '.ClientIDList[]'
+  fi
+
+  echo ""
+  echo "=== Thumbprints ==="
+  local thumb_count
+  thumb_count="$(echo "$json" | jq '.ThumbprintList | length')"
+  if [[ "$thumb_count" -eq 0 ]]; then
+    echo "(none)"
+  else
+    echo "$json" | jq -r '.ThumbprintList[]'
+  fi
+
+  echo ""
+  echo "=== Tags ==="
+  local tag_count
+  tag_count="$(echo "$json" | jq '.Tags // [] | length')"
+  if [[ "$tag_count" -eq 0 ]]; then
+    echo "(none)"
+  else
+    echo -e "Key\tValue"
+    echo "$json" | jq -r '.Tags[] | [.Key, .Value] | @tsv' | column -t -s $'\t'
+  fi
+}
+
 case "$sub" in
   policy)
     [[ $# -ge 1 ]] || { usage >&2; exit 1; }
@@ -607,6 +747,24 @@ case "$sub" in
         ;;
       *)
         echo "unknown instance-profile command: $cmd" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  oidc)
+    [[ $# -ge 1 ]] || { usage >&2; exit 1; }
+    cmd="$1"
+    shift || true
+    case "$cmd" in
+      ls|list)
+        oidc_ls "$@"
+        ;;
+      show)
+        oidc_show "$@"
+        ;;
+      *)
+        echo "unknown oidc command: $cmd" >&2
         usage >&2
         exit 1
         ;;
