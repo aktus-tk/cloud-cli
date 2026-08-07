@@ -70,12 +70,12 @@ case "$cmd" in
   start)
     id=$(cvm_get_id "$1")
     [[ -n "$id" ]] || { echo "no instance: $1" >&2; exit 1; }
-    tccli cvm StartInstances --InstanceIds "$id"
+    tccli cvm StartInstances --cli-unfold-argument --InstanceIds "$id"
     ;;
   stop)
     id=$(cvm_get_id "$1")
     [[ -n "$id" ]] || { echo "no instance: $1" >&2; exit 1; }
-    tccli cvm StopInstances --InstanceIds "$id"
+    tccli cvm StopInstances --cli-unfold-argument --InstanceIds "$id"
     ;;
   help|-h|--help|"")
     echo "cvm commands:"
