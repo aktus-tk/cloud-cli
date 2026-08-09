@@ -50,6 +50,14 @@ require_assume() {
   fi
 }
 
+# awst strips --region and exports AWS_REGION; forward it to assume.
+region_args=()
+if [[ -n "${AWS_REGION:-}" ]]; then
+  region_args+=(--region "$AWS_REGION")
+elif [[ -n "${AWS_DEFAULT_REGION:-}" ]]; then
+  region_args+=(--region "$AWS_DEFAULT_REGION")
+fi
+
 case "${1:-}" in
   help|--help|-h)
     usage
@@ -61,12 +69,12 @@ case "${1:-}" in
     shift || true
     require_profile
     require_assume
-    exec assume "$AWS_PROFILE" -c "$@"
+    exec assume "$AWS_PROFILE" -c "${region_args[@]}" "$@"
     ;;
   -*)
     require_profile
     require_assume
-    exec assume "$AWS_PROFILE" -c "$@"
+    exec assume "$AWS_PROFILE" -c "${region_args[@]}" "$@"
     ;;
   "")
     usage
@@ -74,6 +82,6 @@ case "${1:-}" in
   *)
     require_profile
     require_assume
-    exec assume "$AWS_PROFILE" -c -s "$1" "${@:2}"
+    exec assume "$AWS_PROFILE" -c -s "$1" "${region_args[@]}" "${@:2}"
     ;;
 esac

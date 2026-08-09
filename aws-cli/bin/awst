@@ -7,19 +7,46 @@ else
 fi
 
 _debug=0
+_region=""
 _args=()
-for _a in "$@"; do
-  if [[ "$_a" == "--debug" ]]; then _debug=1
-  else _args+=("$_a")
-  fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --debug)
+      _debug=1
+      shift
+      ;;
+    --region)
+      [[ -n "${2:-}" ]] || { echo "awst: --region requires a value" >&2; exit 1; }
+      _region="$2"
+      shift 2
+      ;;
+    --region=*)
+      _region="${1#--region=}"
+      [[ -n "$_region" ]] || { echo "awst: --region requires a value" >&2; exit 1; }
+      shift
+      ;;
+    *)
+      _args+=("$1")
+      shift
+      ;;
+  esac
 done
 set -- "${_args[@]}"
+
+if [[ -n "$_region" ]]; then
+  export AWS_REGION="$_region"
+  export AWS_DEFAULT_REGION="$_region"
+fi
 
 COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
-  echo "usage: awst [--debug] <command> ..."
+  echo "usage: awst [--debug] [--region <name>] <command> ..."
+  echo
+  echo "global options:"
+  echo "  --debug              print resolved aws CLI invocations"
+  echo "  --region <name>      set AWS region for this invocation (anywhere in args)"
   echo
   echo "available commands:"
   ls "$COMMANDS"
