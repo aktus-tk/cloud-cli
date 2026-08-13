@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+cos_load_creds() {
+  local profile="${TCCLI_PROFILE:-${TENCENTCLOUD_PROFILE:-default}}"
+  local cred_file="${HOME}/.tccli/${profile}.credential"
+  local conf_file="${HOME}/.tccli/${profile}.configure"
+
+  if [[ -n "${TENCENTCLOUD_SECRET_ID:-}" && -n "${TENCENTCLOUD_SECRET_KEY:-}" ]]; then
+    COS_SECRET_ID="$TENCENTCLOUD_SECRET_ID"
+    COS_SECRET_KEY="$TENCENTCLOUD_SECRET_KEY"
+    COS_TOKEN="${TENCENTCLOUD_TOKEN:-}"
+  elif [[ -f "$cred_file" ]]; then
+    COS_SECRET_ID="$(jq -r '.secretId // empty' "$cred_file")"
+    COS_SECRET_KEY="$(jq -r '.secretKey // empty' "$cred_file")"
+    COS_TOKEN="$(jq -r '.token // empty' "$cred_file")"
+  else
+    echo "cos: credentials not found (set TENCENTCLOUD_SECRET_ID/SECRET_KEY or ~/.tccli/${profile}.credential)" >&2
+    exit 1
+  fi
+
+  if [[ -z "${COS_REGION:-}" ]]; then
+    COS_REGION="${TENCENTCLOUD_REGION:-}"
+  fi
+  if [[ -z "$COS_REGION" && -f "$conf_file" ]]; then
+    COS_REGION="$(jq -r '._sys_param.region // empty' "$conf_file")"
+  fi
+
+  export COS_SECRET_ID COS_SECRET_KEY COS_TOKEN COS_REGION
+}
+
+cos_norm_bucket() {
+  local name="${1#cos://}"
+  name="${name#/}"
+  echo "${name%%/*}"
+}
+
+cos_api() {
+  cos_load_creds
+  COS_ACTION="$1" python3 - "$2" "$3" "$4" <<'PY'
+import hashlib, hmac, os, sys, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+
+action = os.environ["COS_ACTION"]
+secret_id = os.environ["COS_SECRET_ID"]
+secret_key = os.environ["COS_SECRET_KEY"]
+token = os.environ.get("COS_TOKEN") or ""
+region = os.environ.get("COS_REGION") or ""
+
+def die(msg, code=1):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+def urlenc(s):
+    return urllib.parse.quote(str(s), safe="-_.~")
+
+def sign(method, host, path, params, headers):
+    now = int(time.time())
+    key_time = "%d;%d" % (now, now + 3600)
+    sign_key = hmac.new(secret_key.encode(), key_time.encode(), hashlib.sha1).hexdigest()
+    enc_params = {urlenc(k).lower(): urlenc(v) for k, v in params.items()}
+    pkeys = sorted(enc_params)
+    url_param_list = ";".join(pkeys)
+    http_parameters = "&".join("%s=%s" % (k, enc_params[k]) for k in pkeys)
+    enc_headers = {urlenc(k).lower(): urlenc(v) for k, v in headers.items()}
+    hkeys = sorted(enc_headers)
+    header_list = ";".join(hkeys)
+    http_headers = "&".join("%s=%s" % (k, enc_headers[k]) for k in hkeys)
+    http_string = "%s\n%s\n%s\n%s\n" % (method.lower(), path, http_parameters, http_headers)
+    sha1_http = hashlib.sha1(http_string.encode()).hexdigest()
+    string_to_sign = "sha1\n%s\n%s\n" % (key_time, sha1_http)
+    signature = hmac.new(sign_key.encode(), string_to_sign.encode(), hashlib.sha1).hexdigest()
+    return (
+        "q-sign-algorithm=sha1&q-ak=%s&q-sign-time=%s&q-key-time=%s"
+        "&q-header-list=%s&q-url-param-list=%s&q-signature=%s"
+        % (secret_id, key_time, key_time, header_list, url_param_list, signature)
+    )
+
+def request(method, host, path="/", params=None, body=None, content_type=None):
+    params = params or {}
+    headers = {"Host": host}
+    if token:
+        headers["x-cos-security-token"] = token
+    if content_type:
+        headers["Content-Type"] = content_type
+    auth = sign(method, host, path, params, headers)
+    headers["Authorization"] = auth
+    qs = urllib.parse.urlencode(params)
+    url = "https://%s%s" % (host, path)
+    if qs:
+        url += "?" + qs
+    data = body.encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        msg = xml_error(raw) or ("HTTP %s" % e.code)
+        die("cos: %s" % msg)
+
+def xml_error(raw):
+    if not raw:
+        return ""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return raw.decode("utf-8", "replace")[:300]
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+    code = (root.findtext(ns + "Code") or "").strip()
+    message = (root.findtext(ns + "Message") or "").strip()
+    if code and message:
+        return "%s: %s" % (code, message)
+    return (code or message or raw.decode("utf-8", "replace")[:300])
+
+def localname(tag):
+    return tag.split("}", 1)[-1]
+
+def findall(elem, name):
+    return [c for c in elem.iter() if localname(c.tag) == name]
+
+def text(elem, name, default=""):
+    for c in findall(elem, name):
+        if c.text:
+            return c.text
+    return default
+
+def list_buckets():
+    status, raw = request("GET", "service.cos.myqcloud.com")
+    root = ET.fromstring(raw)
+    rows = []
+    for b in findall(root, "Bucket"):
+        rows.append((
+            text(b, "Name"),
+            text(b, "Location"),
+            text(b, "CreationDate"),
+        ))
+    return rows
+
+def bucket_region(name):
+    if region:
+        return region
+    for bname, loc, _ in list_buckets():
+        if bname == name:
+            return loc
+    die("cos: bucket not found: %s (pass --region)" % name)
+
+def list_objects(bucket):
+    loc = bucket_region(bucket)
+    host = "%s.cos.%s.myqcloud.com" % (bucket, loc)
+    rows = []
+    marker = ""
+    while True:
+        params = {"max-keys": "1000"}
+        if marker:
+            params["marker"] = marker
+        status, raw = request("GET", host, "/", params)
+        root = ET.fromstring(raw)
+        for c in findall(root, "Contents"):
+            rows.append((
+                text(c, "Key"),
+                text(c, "Size", "0"),
+                text(c, "LastModified"),
+                text(c, "StorageClass"),
+            ))
+        truncated = text(root, "IsTruncated").lower() == "true"
+        marker = text(root, "NextMarker") or (rows[-1][0] if rows else "")
+        if not truncated:
+            break
+        if not marker:
+            break
+    return rows
+
+def create_bucket(bucket, loc):
+    if not loc:
+        die("cos: --region is required to create a bucket")
+    host = "%s.cos.%s.myqcloud.com" % (bucket, loc)
+    body = (
+        "<CreateBucketConfiguration>"
+        "<LocationConstraint>%s</LocationConstraint>"
+        "</CreateBucketConfiguration>"
+    ) % loc
+    request("PUT", host, "/", body=body, content_type="application/xml")
+    print("Created: %s (%s)" % (bucket, loc))
+
+def delete_bucket(bucket):
+    loc = bucket_region(bucket)
+    host = "%s.cos.%s.myqcloud.com" % (bucket, loc)
+    request("DELETE", host, "/")
+    print("Deleted: %s" % bucket)
+
+if action == "ls-buckets":
+    rows = list_buckets()
+    print("Name,Location,CreationDate")
+    for r in rows:
+        print(",".join(r))
+elif action == "ls-objects":
+    bucket = sys.argv[1]
+    rows = list_objects(bucket)
+    print("Key,Size,LastModified,StorageClass")
+    for r in rows:
+        print(",".join(r))
+elif action == "create":
+    loc = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else region
+    create_bucket(sys.argv[1], loc)
+elif action == "delete":
+    delete_bucket(sys.argv[1])
+else:
+    die("cos: unknown action %s" % action)
+PY
+}
+
+parse_flags() {
+  COS_CSV=0
+  COS_ARGS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv)
+        COS_CSV=1
+        shift
+        ;;
+      --region)
+        [[ -n "${2:-}" ]] || { echo "cos: --region requires a value" >&2; exit 1; }
+        COS_REGION="$2"
+        shift 2
+        ;;
+      --region=*)
+        COS_REGION="${1#--region=}"
+        [[ -n "$COS_REGION" ]] || { echo "cos: --region requires a value" >&2; exit 1; }
+        shift
+        ;;
+      *)
+        COS_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+print_table() {
+  if [[ "$COS_CSV" -eq 1 ]]; then
+    cat
+  else
+    column -t -s ','
+  fi
+}
+
+case "$cmd" in
+  ls|list)
+    parse_flags "$@"
+    set -- "${COS_ARGS[@]}"
+    if [[ -z "${1:-}" ]]; then
+      cos_api ls-buckets | print_table
+    else
+      cos_api ls-objects "$(cos_norm_bucket "$1")" | print_table
+    fi
+    ;;
+  create|mb)
+    parse_flags "$@"
+    set -- "${COS_ARGS[@]}"
+    [[ -n "${1:-}" ]] || { echo "usage: tcclit cos create BUCKET [--region REGION]" >&2; exit 1; }
+    cos_api create "$(cos_norm_bucket "$1")" "${COS_REGION:-}"
+    ;;
+  delete|rm|rb)
+    parse_flags "$@"
+    set -- "${COS_ARGS[@]}"
+    [[ -n "${1:-}" ]] || { echo "usage: tcclit cos delete BUCKET [--region REGION]" >&2; exit 1; }
+    cos_api delete "$(cos_norm_bucket "$1")"
+    ;;
+  help|-h|--help|"")
+    echo "cos commands (Tencent Cloud Object Storage):"
+    echo "  ls [--csv]                         list buckets"
+    echo "  ls BUCKET [--csv]                  list objects in bucket"
+    echo "  create BUCKET [--region REGION]    create bucket (name-appid)"
+    echo "  delete BUCKET [--region REGION]    delete empty bucket"
+    echo
+    echo "Uses TENCENTCLOUD_SECRET_ID/SECRET_KEY, or ~/.tccli/\$TCCLI_PROFILE.credential"
+    echo "Region defaults to TENCENTCLOUD_REGION or tccli configure region."
+    echo
+    echo "Examples:"
+    echo "  tcclit cos ls"
+    echo "  tcclit cos ls mybucket-1250000000"
+    echo "  tcclit cos create mybucket-1250000000 --region ap-guangzhou"
+    echo "  tcclit cos delete mybucket-1250000000"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit cos help" >&2
+    exit 1
+    ;;
+esac
