@@ -38,6 +38,25 @@ cos_norm_bucket() {
   echo "${name%%/*}"
 }
 
+cos_appid() {
+  tccli cam GetUserAppId --output json | jq -r '.AppId // empty'
+}
+
+# COS bucket names must be <name>-<appid>. Append AppId when omitted.
+cos_with_appid() {
+  local name
+  name="$(cos_norm_bucket "$1")"
+  [[ -n "$name" ]] || { echo "cos: bucket name is required" >&2; exit 1; }
+  local appid
+  appid="$(cos_appid)"
+  [[ -n "$appid" ]] || { echo "cos: failed to get AppId (tccli cam GetUserAppId)" >&2; exit 1; }
+  if [[ "$name" == *"-${appid}" ]]; then
+    echo "$name"
+  else
+    echo "${name}-${appid}"
+  fi
+}
+
 cos_api() {
   cos_load_creds
   COS_ACTION="$1" python3 - "$2" "$3" "$4" <<'PY'
@@ -256,36 +275,37 @@ case "$cmd" in
     if [[ -z "${1:-}" ]]; then
       cos_api ls-buckets | print_table
     else
-      cos_api ls-objects "$(cos_norm_bucket "$1")" | print_table
+      cos_api ls-objects "$(cos_with_appid "$1")" | print_table
     fi
     ;;
   create|mb)
     parse_flags "$@"
     set -- "${COS_ARGS[@]}"
     [[ -n "${1:-}" ]] || { echo "usage: tcclit cos create BUCKET [--region REGION]" >&2; exit 1; }
-    cos_api create "$(cos_norm_bucket "$1")" "${COS_REGION:-}"
+    cos_api create "$(cos_with_appid "$1")" "${COS_REGION:-}"
     ;;
   delete|rm|rb)
     parse_flags "$@"
     set -- "${COS_ARGS[@]}"
     [[ -n "${1:-}" ]] || { echo "usage: tcclit cos delete BUCKET [--region REGION]" >&2; exit 1; }
-    cos_api delete "$(cos_norm_bucket "$1")"
+    cos_api delete "$(cos_with_appid "$1")"
     ;;
   help|-h|--help|"")
     echo "cos commands (Tencent Cloud Object Storage):"
     echo "  ls [--csv]                         list buckets"
     echo "  ls BUCKET [--csv]                  list objects in bucket"
-    echo "  create BUCKET [--region REGION]    create bucket (name-appid)"
+    echo "  create BUCKET [--region REGION]    create bucket (AppId appended if omitted)"
     echo "  delete BUCKET [--region REGION]    delete empty bucket"
     echo
     echo "Uses TENCENTCLOUD_SECRET_ID/SECRET_KEY, or ~/.tccli/\$TCCLI_PROFILE.credential"
     echo "Region defaults to TENCENTCLOUD_REGION or tccli configure region."
+    echo "Bucket names are <name>-<appid>; AppId is fetched via cam GetUserAppId."
     echo
     echo "Examples:"
     echo "  tcclit cos ls"
-    echo "  tcclit cos ls mybucket-1250000000"
-    echo "  tcclit cos create mybucket-1250000000 --region ap-guangzhou"
-    echo "  tcclit cos delete mybucket-1250000000"
+    echo "  tcclit cos ls mybucket"
+    echo "  tcclit cos create mybucket --region ap-guangzhou"
+    echo "  tcclit cos delete mybucket"
     ;;
   *)
     echo "unknown: $cmd" >&2
