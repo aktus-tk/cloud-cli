@@ -88,18 +88,8 @@ case "$sub" in
       exit 1
     fi
 
-    printf "delete Lightsail instance '%s' (static IP は削除しません)? [y/N] " "$NAME"
-    read -r ans
-    case "$ans" in
-      y|Y|yes|YES) ;;
-      *)
-        echo "aborted"
-        exit 1
-        ;;
-    esac
-
-    echo "==> delete instance: $NAME"
-    aws lightsail delete-instance --instance-name "$NAME"
+    echo "aws lightsail delete-instance --instance-name \"$NAME\""
+    echo "# ^ Run the above command to delete the instance (static IP will remain)"
     ;;
 
   # -----------------------------

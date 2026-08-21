@@ -293,8 +293,23 @@ case "$cmd" in
       ec2_types_csv "$@" | column -s, -t
     fi
   ;;
-  start) aws ec2 start-instances --instance-ids $(ec2_get_id "$1") ;;
-  stop)  aws ec2  stop-instances --instance-ids $(ec2_get_id "$1") ;;
+  start)
+    id=$(ec2_get_id "$1")
+    if [[ -n "$DEBUG" ]]; then
+      echo "aws ec2 start-instances --instance-ids $id"
+    else
+      aws ec2 start-instances --instance-ids $id
+    fi
+  ;;
+  stop)
+    id=$(ec2_get_id "$1")
+    if [[ -n "$DEBUG" ]]; then
+      echo "aws ec2 stop-instances --instance-ids $id"
+    else
+      echo "aws ec2 stop-instances --instance-ids $id"
+      echo "# Run the above command to stop the instance"
+    fi
+  ;;
 
   sg_rules)
    COLS="GroupId,GroupName,Direction,Proto,Port,CidrIp,GroupId,Description"

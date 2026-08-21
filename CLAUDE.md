@@ -97,8 +97,8 @@ esac
 ```bash
 awst ec2 ls              # インスタンス一覧を表示
 awst ec2 ls --csv       # CSV 形式で出力
-awst ec2 start NAME     # インスタンスを起動
-awst ec2 stop NAME      # インスタンスを停止
+awst ec2 start NAME     # インスタンスを起動（直接実行）
+awst ec2 stop NAME      # 停止コマンドを出力（print only）
 
 awst alb ls              # ALB 一覧を表示（Security Groups 含む）
 awst alb listener NAME   # ALB のリスナー情報を表示
@@ -117,9 +117,9 @@ awst iam user policies NAME  # user にアタッチされたポリシー一覧
 awst secrets ls              # シークレット一覧
 awst secrets show NAME       # シークレットメタデータ詳細
 awst secrets get NAME        # シークレット値取得
-awst secrets create NAME --string "value"  # シークレット作成
-awst secrets update NAME --string "new-value"  # シークレット更新
-awst secrets delete NAME     # シークレット削除
+awst secrets create NAME --string "value"  # シークレット作成（直接実行）
+awst secrets update NAME --string "new-value"  # シークレット更新（直接実行）
+awst secrets delete NAME     # 削除コマンドを出力（print only）
 
 awst eks list-clusters           # EKS クラスター一覧
 awst eks list-clusters --csv     # EKS クラスター一覧（CSV形式）
@@ -164,8 +164,8 @@ gcloudt gcs rm gs://BUCKET/PREFIX/ -r             # プレフィックス配下�
 ```bash
 tcclit cvm ls           # CVM インスタンス一覧
 tcclit cvm types        # 使用可能なインスタンスタイプ一覧
-tcclit cvm start NAME   # インスタンスを起動
-tcclit cvm stop NAME    # インスタンスを停止
+tcclit cvm start NAME   # インスタンスを起動（直接実行）
+tcclit cvm stop NAME    # 停止コマンドを出力（print only）
 tcclit vpc ...          # VPC 操作
 ```
 

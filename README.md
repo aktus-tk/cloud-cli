@@ -52,6 +52,43 @@ export PATH="$HOME/bin:$PATH"
 - **GCP**: `gcloud` CLI ([インストールガイド](https://cloud.google.com/sdk/docs/install))
 - **Tencent Cloud**: `tccli` ([インストールガイド](https://cloud.tencent.com/document/product/440/34011))
 
+## 共通実行ポリシー
+
+cloud-cli は各クラウドプロバイダーのネイティブ CLI のラッパーです。以下のポリシーが全ツール（`awst`, `gcloudt`, `tcclit`）に適用されます。
+
+### 操作の分類と実行方式
+
+操作を以下の3つに分類し、それぞれの実行方式を決定する。単純なコマンド名（create / delete 等）だけで判断せず、可逆性・データ損失・復旧可能性・影響範囲も考慮する。
+
+| 分類 | 通常実行 | `--debug` 時 |
+|------|---------|-------------|
+| **Read-only**（list, show, get, describe 等） | 直接実行 | コマンド出力のみ |
+| **通常の変更**（create, update, restore 等） | 直接実行 | コマンド出力のみ |
+| **破壊的・高リスクな変更**（delete, delete --force, terminate 等） | コマンド出力のみ | コマンド出力のみ |
+
+#### Read-only 操作
+
+ネイティブ CLI を直接実行し、結果を整形して表示する。例: 一覧表示、詳細表示、値の取得。
+
+#### 通常の変更操作
+
+ネイティブ CLI を直接実行する。「変更操作だから」という理由だけで dry-run / print-only にはしない。例: リソース作成、設定更新、復元。
+
+#### 破壊的・高リスクな操作（print only）
+
+cloud-cli からは実行せず、実行予定のネイティブ CLI コマンドを標準出力に出力して終了する。cloud-cli 自身はそのコマンドを一切実行しない。ユーザーが出力されたコマンドを確認し、必要に応じて別途実行する。
+
+分類はコマンド名だけで判断せず、以下を考慮する:
+- データ損失の可能性
+- 不可逆性（`--force` 等の有無）
+- 復旧可能性（復旧可能な delete と即時削除は同じ危険度として扱わない）
+- 影響範囲
+- 既存リソースや設定への重大な影響
+
+### --debug モード
+
+`--debug` は全操作共通の dry-run / command preview とする。操作分類に関係なく、ネイティブ CLI を実行せず、実行予定だったコマンドのみを出力する。
+
 ## 使い方
 
 ### AWS CLI (`awst`)
@@ -73,7 +110,7 @@ Granted のセットアップと WSL でのブラウザ起動は [README_granted
 awst ec2 ls              # インスタンス一覧
 awst ec2 ls --csv        # CSV 形式で出力
 awst ec2 start NAME      # インスタンスを起動
-awst ec2 stop NAME       # インスタンスを停止
+awst ec2 stop NAME       # 停止コマンドを出力（print only）
 awst ec2 sg_rules NAME   # セキュリティグループルール表示
 ```
 
@@ -121,19 +158,19 @@ awst secrets show NAME               # シークレットメタデータ詳細
 awst secrets get NAME                # シークレット値取得
 awst secrets get NAME --json         # JSON形式で取得
 
-# シークレット作成
+# シークレット作成（直接実行）
 awst secrets create my-api-key --string "abc123xyz"
 awst secrets create my-db-creds --json '{"username":"admin","password":"pass"}'
 awst secrets create my-cert --file cert.pem --description "SSL certificate"
 
-# シークレット更新
+# シークレット更新（直接実行）
 awst secrets update my-api-key --string "new-value"
 awst secrets update my-db-creds --json '{"username":"admin","password":"newpass"}'
 
-# シークレット削除・復元
+# シークレット削除（print only。コマンドを出力して終了）
 awst secrets delete NAME             # 30日間の復旧期間付き削除
-awst secrets delete NAME --force     # 即時削除
-awst secrets restore NAME            # 削除したシークレットを復元
+awst secrets delete NAME --force     # 即時削除（不可逆）
+awst secrets restore NAME            # 削除したシークレットを復元（直接実行）
 ```
 
 #### CloudFront
@@ -219,8 +256,8 @@ gcloudt clb show NAME               # 詳細情報
 tcclit cvm ls           # インスタンス一覧
 tcclit cvm ls --csv     # CSV 形式
 tcclit cvm types        # 使用可能なインスタンスタイプ一覧
-tcclit cvm start NAME   # インスタンス起動
-tcclit cvm stop NAME    # インスタンス停止
+tcclit cvm start NAME   # インスタンスを起動
+tcclit cvm stop NAME    # 停止コマンドを出力（print only）
 ```
 
 #### VPC

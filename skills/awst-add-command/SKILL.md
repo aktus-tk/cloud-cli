@@ -55,6 +55,38 @@ cloud-cli の `awst` に AWS サービス用の read-only サブコマンドを�
 - 既存コードのスタイルに合わせ、過剰な抽象化はしない
 - スコープ外の変更（README, CLAUDE.md）はユーザーが求めたときだけ
 
+## コマンド追加時の実行方式
+
+新しいサブコマンドやオプションを追加する際は、操作を以下の3つに分類し、実装方式を決定する。単純な create/update/delete といった名前だけで判断せず、可逆性・データ損失・復旧可能性・影響範囲を考慮する。
+
+### 1. Read-only 操作
+
+ネイティブ CLI を直接実行してよい。cloud-cli が結果を整形して表示する。例: `ls`, `show`, `get`, `describe`, `list`, `types`。
+
+### 2. 通常の変更操作
+
+ネイティブ CLI を直接実行してよい。dry-run や print-only にはしない。例: `create`, `update`, `restore`, `start`。
+
+### 3. 破壊的・高リスクな操作（print only）
+
+cloud-cli からネイティブ CLI を実行してはならない。実行予定のネイティブコマンドを標準出力に出力して終了する。cloud-cli 自身はそのコマンドを一切実行しない。
+
+**print only は「確認プロンプトを表示してから cloud-cli が実行する」ことを意味しない。** ユーザーが出力されたコマンドを確認し、必要に応じて別途実行する。
+
+分類はコマンド名だけでなく以下を考慮して判断する:
+
+- データ損失の可能性
+- 不可逆性（`--force` 等の有無で危険度が変わる）
+- 復旧可能性（復旧可能な delete と即時削除は区別する）
+- 影響範囲
+- 既存リソースや設定への重大な影響
+
+例: `delete`, `delete --force`, `terminate`, `revoke`, `detach --force`。
+
+### `--debug` の実装ルール
+
+`--debug` が指定された場合、操作分類に関係なくネイティブ CLI を実行してはならない。実行予定のコマンドのみを出力する。`--debug` は dry-run として実行予定コマンドを確認するモードとして扱う。
+
 ## 既存コマンド一覧
 
 [references/existing-commands.md](references/existing-commands.md) を参照。
