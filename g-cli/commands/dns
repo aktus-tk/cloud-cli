@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+dns_zones() {
+  gcloud dns managed-zones list "$@"
+}
+
+dns_records() {
+  local zone="$1"
+  if [[ -z "$zone" ]]; then
+    echo "usage: gcloudt dns records ZONE_NAME [gcloud options...]" >&2
+    exit 1
+  fi
+  shift
+  gcloud dns record-sets list --zone="$zone" "$@"
+}
+
+case "$cmd" in
+  zones)
+    dns_zones "$@"
+    ;;
+  records|record-sets)
+    dns_records "$@"
+    ;;
+  help|-h|--help|"")
+    echo "dns commands:"
+    echo "  zones             gcloud dns managed-zones list"
+    echo "  records ZONE      gcloud dns record-sets list --zone=ZONE"
+    echo ""
+    echo "note: Cloud DNS を使っていないプロジェクト (例: visualive は外部 DNS が正) では"
+    echo "      managed-zones が 0 件になる。SA 権限で照会できない場合は permission denied が返る。"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcloudt dns help" >&2
+    exit 1
+    ;;
+esac

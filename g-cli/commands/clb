@@ -182,6 +182,64 @@ clb_cert_maps() {
   gcloud certificate-manager maps list "$@"
 }
 
+# 予約済み Global/Regional IP アドレス一覧
+clb_addresses() {
+  echo "NAME,ADDRESS,STATUS,REGION,TYPE"
+  gcloud compute addresses list --format=json | jq -r '
+    .[] |
+    [
+      .name,
+      .address,
+      .status,
+      (.region // "" | split("/") | .[-1]),
+      (.addressType // "EXTERNAL")
+    ] | @csv
+  '
+}
+
+# SSL 証明書 (compute ssl-certificates, 旧方式) 一覧
+clb_ssl_certs() {
+  gcloud compute ssl-certificates list "$@"
+}
+
+# Certificate Manager 証明書一覧
+clb_certificates() {
+  gcloud certificate-manager certificates list "$@"
+}
+
+# Certificate Manager 証明書一覧 (CSV: scope は実効値 DEFAULT を補完)
+clb_certificates_csv() {
+  gcloud certificate-manager certificates list "$@" --format=json | jq -r '
+    "NAME,SCOPE,EXPIRE_TIME,CREATE_TIME",
+    (.[] | [
+      (.name | split("/") | .[-1]),
+      (.scope // "DEFAULT"),
+      .expireTime,
+      .createTime
+    ] | @csv)
+  '
+}
+
+# Backend Service 一覧
+clb_backend_services() {
+  gcloud compute backend-services list "$@"
+}
+
+# Target Proxy 一覧 (HTTP/HTTPS を TYPE 列で結合)
+clb_target_proxies() {
+  local http
+  local https
+  http=$(gcloud compute target-http-proxies list --format=json 2>/dev/null | \
+    jq -r '.[] | [.name, "HTTP", (.urlMap | split("/") | .[-1])] | @tsv')
+  https=$(gcloud compute target-https-proxies list --format=json 2>/dev/null | \
+    jq -r '.[] | [.name, "HTTPS", (.urlMap | split("/") | .[-1]), (.certificateMap // "" | split("/") | .[-1])] | @tsv')
+  echo "NAME,TYPE,URL_MAP,CERTIFICATE_MAP"
+  # HTTP 行は3フィールド、HTTPS 行は4フィールド。フィールド数に応じて出力し、
+  # 存在しない列 (HTTP の CERTIFICATE_MAP) に空フィールドを付けない。
+  { printf '%s\n' "$http"; printf '%s\n' "$https"; } | \
+    awk -F'\t' 'NF>0 { printf "%s", $1; for (i=2; i<=NF; i++) printf ",%s", $i; print "" }'
+}
+
 case "$cmd" in
   ls)
     if [[ "$1" == "--csv" ]]; then
@@ -203,7 +261,7 @@ case "$cmd" in
   cert-maps)
     if [[ "$1" == "--csv" ]]; then
       shift
-      clb_cert_maps --format=csv "$@"
+      clb_cert_maps --format="csv(name,createTime)" "$@"
     else
       clb_cert_maps "$@"
     fi
@@ -212,7 +270,7 @@ case "$cmd" in
     extra=()
     if [[ "$1" == "--csv" ]]; then
       shift
-      extra=(--format=csv)
+      extra=(--format="csv(name,hostname,certificates,state)")
     fi
     map=$1
     shift || true
@@ -222,6 +280,44 @@ case "$cmd" in
     fi
     gcloud certificate-manager maps entries list --map="$map" "${extra[@]}" "$@"
     ;;
+  addresses)
+    if [[ "$1" == "--csv" ]]; then
+      clb_addresses
+    else
+      clb_addresses | sed 's/"//g' | column -t -s ','
+    fi
+    ;;
+  ssl-certs)
+    if [[ "$1" == "--csv" ]]; then
+      shift
+      clb_ssl_certs --format="csv(name,type,creationTimestamp,expireTime)" "$@"
+    else
+      clb_ssl_certs "$@"
+    fi
+    ;;
+  certificates)
+    if [[ "$1" == "--csv" ]]; then
+      shift
+      clb_certificates_csv "$@"
+    else
+      clb_certificates "$@"
+    fi
+    ;;
+  backend-services)
+    if [[ "$1" == "--csv" ]]; then
+      shift
+      clb_backend_services --format="csv(name,protocol,portName,backends[].group.basename())" "$@"
+    else
+      clb_backend_services "$@"
+    fi
+    ;;
+  target-proxies)
+    if [[ "$1" == "--csv" ]]; then
+      clb_target_proxies
+    else
+      clb_target_proxies | column -t -s ','
+    fi
+    ;;
   help|*)
     echo "clb (Cloud Load Balancer) commands:"
     echo "  ls           list load balancers (forwarding-rules + target-proxy + url-map)"
@@ -229,6 +325,11 @@ case "$cmd" in
     echo "  info [NAME]  show detailed tree from IP to backend instances"
     echo "  ip           show IP addresses only"
     echo "  ip --csv     show IP addresses as CSV"
+    echo "  addresses [--csv]              reserved Global/Regional IP addresses"
+    echo "  ssl-certs [--csv] [opts...]    SSL certificates (compute, legacy)"
+    echo "  certificates [--csv] [opts...] Certificate Manager certificates"
+    echo "  backend-services [--csv] [opts...]  backend services list"
+    echo "  target-proxies [--csv]         HTTP + HTTPS target proxies (combined, TYPE col)"
     echo "  cert-maps [--csv] [gcloud options...]  Certificate Manager maps (gcloud certificate-manager maps list)"
     echo "  cert-map-entries [--csv] MAP [opts...]  map entries (gcloud certificate-manager maps entries list --map=MAP)"
     ;;

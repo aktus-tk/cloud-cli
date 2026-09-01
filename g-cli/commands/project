@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+current_project() {
+  local p
+  p="$(gcloud config get-value project 2>/dev/null || true)"
+  if [[ -z "$p" || "$p" == "(unset)" ]]; then
+    echo "project is not set; run: gcloud config set project PROJECT" >&2
+    return 1
+  fi
+  printf '%s' "$p"
+}
+
+project_describe() {
+  local project="$1"
+  shift || true
+  if [[ -z "$project" ]]; then
+    project="$(current_project)" || exit 1
+  fi
+  gcloud projects describe "$project" "$@"
+}
+
+project_list() {
+  gcloud projects list "$@"
+}
+
+case "$cmd" in
+  describe|show)
+    project_describe "$@"
+    ;;
+  list|ls)
+    project_list "$@"
+    ;;
+  help|-h|--help|"")
+    echo "project commands:"
+    echo "  describe [PROJECT]   gcloud projects describe (default: CLOUDSDK_CORE_PROJECT)"
+    echo "  list                 gcloud projects list"
+    echo ""
+    echo "note: projects describe/list need the Cloud Resource Manager API"
+    echo "      (cloudresourcemanager.googleapis.com) enabled and IAM permission."
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcloudt project help" >&2
+    exit 1
+    ;;
+esac

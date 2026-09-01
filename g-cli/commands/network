@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+# VPC ネットワーク一覧。subnetMode は gcloud が compute API では直接返さないため
+# autoCreateSubnetworks から導出 (true=AUTO, false=CUSTOM)。
+network_ls_csv() {
+  echo "NAME,SUBNET_MODE,ROUTING_MODE"
+  gcloud compute networks list --format=json | jq -r '
+    .[] |
+    [
+      .name,
+      (if .autoCreateSubnetworks then "AUTO" else "CUSTOM" end),
+      .routingConfig.routingMode
+    ] | @csv
+  '
+}
+
+network_ls() {
+  network_ls_csv | sed 's/"//g' | column -t -s ','
+}
+
+# サブネット一覧
+network_subnets() {
+  gcloud compute networks subnets list "$@"
+}
+
+# ルート一覧 (簡略化: name, network, destRange, nextHop, priority)
+network_routes() {
+  gcloud compute routes list --format=json | jq -r '
+    "NAME,NETWORK,DEST_RANGE,NEXT_HOP,PRIORITY",
+    (.[] |
+      [
+        .name,
+        (.network | split("/") | .[-1]),
+        .destRange,
+        ((.nextHopGateway // .nextHopPeering // .nextHopInstance // .nextHopIp // .nextHopVpnTunnel // .nextHopNetwork // "") | split("/") | .[-1]),
+        (.priority // 0)
+      ] | @csv)
+  '
+}
+
+# Cloud Router 一覧
+network_routers() {
+  gcloud compute routers list "$@"
+}
+
+# Cloud NAT (router の NAT 設定) 一覧
+# get-nat-mapping-info は「NAT が実際にマッピングしている IP」を返すため、
+# 設定確認には router describe の nat 情報を使う。
+network_nat() {
+  local router="$1"
+  if [[ -z "$router" ]]; then
+    # ROUTER 省略時は全 router を列挙
+    local routers
+    routers=$(gcloud compute routers list --format="value(name,region.basename())" 2>/dev/null || true)
+    if [[ -z "$routers" ]]; then
+      echo "No routers found in this project. Cloud NAT is not in use."
+      echo "(NAT は Cloud Router 配下にしか作れないため、routers 一覧が空なら NAT も存在しない)"
+      return 0
+    fi
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      read -r name region <<< "$line"
+      echo "=== Router: $name ($region) ==="
+      network_nat_show "$name" "$region"
+    done <<< "$routers"
+    return 0
+  fi
+  network_nat_show "$router" "${2:-asia-northeast1}"
+}
+
+network_nat_show() {
+  local router="$1" region="$2"
+  local json
+  json=$(gcloud compute routers describe "$router" --region="$region" --format=json 2>/dev/null || true)
+  if [[ -z "$json" ]]; then
+    echo "  (router not found or no permission)"
+    return 0
+  fi
+  local nats
+  nats=$(echo "$json" | jq -r '.nats | length')
+  if [[ "$nats" == "0" ]]; then
+    echo "  (no NAT configured)"
+    return 0
+  fi
+  echo "$json" | jq -r '
+    (.nats // [])[] |
+      "  NAT Name: \(.name)",
+      "    Source Subnetwork IP Ranges: \(.sourceSubnetworkIpRangesToNat | join(", "))",
+      "    NAT IP Allocation: \(.natIpAllocateOption)",
+      "    NAT IPs: \(.natIps // [] | map(split("/") | .[-1]) | join(", "))",
+      "    Min Ports Per VM: \(.minPortsPerVm // "auto")"
+  '
+}
+
+case "$cmd" in
+  ls|list)
+    network_ls
+    ;;
+  subnets|subnet)
+    network_subnets "$@"
+    ;;
+  routes|route)
+    network_routes
+    ;;
+  routers|router)
+    network_routers "$@"
+    ;;
+  nat)
+    network_nat "$@"
+    ;;
+  help|-h|--help|"")
+    echo "network commands:"
+    echo "  ls                list VPC networks (subnetMode / routingMode)"
+    echo "  subnets           gcloud compute networks subnets list"
+    echo "  routes            list routes (simplified: name, network, dest, nextHop, priority)"
+    echo "  routers           gcloud compute routers list"
+    echo "  nat [ROUTER]      Cloud NAT config. ROUTER 省略時は全 router の NAT を表示"
+    echo "                    (get-nat-mapping-info が権限で不可の場合は routers/describe で判断)"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcloudt network help" >&2
+    exit 1
+    ;;
+esac

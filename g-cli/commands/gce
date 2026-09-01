@@ -108,6 +108,42 @@ case "$cmd" in
   groups)
   gcloud compute instance-groups list
   ;;
+  # インスタンスグループのメンバー一覧 (unmanaged / managed 両対応)
+  group-instances)
+    grp=$1
+    shift || true
+    if [[ -z "$grp" ]]; then
+      echo "usage: gcloudt gce group-instances GROUP_NAME [--zone=ZONE|--region=REGION] [opts...]" >&2
+      exit 1
+    fi
+    # ゾーン/リージョン指定がなければ instance-groups list で自動判定
+    zone=""; region=""
+    for a in "$@"; do
+      case "$a" in
+        --zone=*) zone="${a#--zone=}" ;;
+        --region=*) region="${a#--region=}" ;;
+      esac
+    done
+    if [[ -z "$zone" && -z "$region" ]]; then
+      # instance-groups list は zonal / regional の両方を返し、zone か region の
+      # どちらかが入る。同名が複数ある場合は先頭のみ使用。
+      loc="$(gcloud compute instance-groups list --filter="name=$grp" \
+        --format="value(zone.basename(),region.basename())" 2>/dev/null | awk 'NR==1 {print}')"
+      if [[ -n "$loc" ]]; then
+        read -r zone region <<< "$loc"
+      fi
+      if [[ -z "$zone" && -z "$region" ]]; then
+        echo "error: could not resolve zone/region for group '$grp'" >&2
+        echo "  (instance-groups list が空・権限エラーの可能性。--zone= または --region= を明示指定してください)" >&2
+        exit 1
+      fi
+    fi
+    if [[ -n "$zone" ]]; then
+      gcloud compute instance-groups list-instances "$grp" --zone="$zone" "$@"
+    else
+      gcloud compute instance-groups list-instances "$grp" --region="$region" "$@"
+    fi
+    ;;
   managed-group)
     mg_cmd=$1
     shift || true
@@ -135,6 +171,7 @@ case "$cmd" in
     echo "  templates  list instance templates"
     echo "  template NAME [opts]   instance-templates describe (raw gcloud output)"
     echo "  groups     instance-groups list"
+    echo "  group-instances GROUP [--zone=Z|--region=R] [opts]  list instances in a group (unmanaged/managed auto)"
     echo "  managed-group NAME [opts]        instance-groups managed list-instances"
     echo "  managed-group describe NAME [opts]   instance-groups managed describe"
     echo "  start NAME"

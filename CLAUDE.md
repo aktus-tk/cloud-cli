@@ -31,7 +31,10 @@ cloud-cli/
 │       ├── firewall  # VPC Firewall ルール表示
 │       ├── sa        # Service Account 表示
 │       ├── gcs       # Cloud Storage バケット表示
-│       └── clb       # Cloud Load Balancer
+│       ├── clb       # Cloud Load Balancer
+│       ├── project   # GCP プロジェクト情報
+│       ├── network   # VPC / Subnet / Route / Router / NAT
+│       └── dns       # Cloud DNS
 │
 └── tc-cli/          # Tencent Cloud CLI ヘルパー
     ├── bin/
@@ -138,6 +141,8 @@ gcloudt gce ls --csv                # CSV 形式で出力
 gcloudt gce show INSTANCE_NAME      # インスタンス詳細情報（SA、ボリューム）
 gcloudt gce images                  # イメージ一覧
 gcloudt gce templates               # インスタンステンプレート一覧
+gcloudt gce groups                  # インスタンスグループ一覧
+gcloudt gce group-instances GROUP   # グループのメンバー一覧（unmanaged/managed 自動判定）
 
 gcloudt firewall ls                 # VPC Firewall ルール一覧
 gcloudt firewall ls --csv           # CSV 形式で出力
@@ -157,6 +162,29 @@ gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT      # ローカルファイルを�
 
 gcloudt gcs rm gs://BUCKET/OBJECT                 # オブジェクトを削除
 gcloudt gcs rm gs://BUCKET/PREFIX/ -r             # プレフィックス配下を再帰削除
+
+gcloudt clb ls                     # Load Balancer（forwarding-rule）一覧
+gcloudt clb ls --csv               # CSV 形式で出力
+gcloudt clb info NAME              # LB の詳細ツリー（IP → backend インスタンス）
+gcloudt clb addresses              # 予約済み Global/Regional IP アドレス一覧
+gcloudt clb ssl-certs              # SSL 証明書（compute, 旧方式）
+gcloudt clb certificates           # Certificate Manager 証明書一覧
+gcloudt clb backend-services       # Backend Service 一覧
+gcloudt clb target-proxies         # HTTP + HTTPS Target Proxy 一覧（TYPE 列付き）
+gcloudt clb cert-maps              # Certificate Manager maps 一覧
+gcloudt clb cert-map-entries MAP   # Certificate Manager map のエントリ一覧
+
+gcloudt project describe [PROJECT]  # プロジェクト情報（既定: CLOUDSDK_CORE_PROJECT）
+gcloudt project list                # プロジェクト一覧
+
+gcloudt network ls                  # VPC ネットワーク一覧（subnetMode / routingMode）
+gcloudt network subnets             # サブネット一覧
+gcloudt network routes              # ルート一覧（簡略化）
+gcloudt network routers             # Cloud Router 一覧
+gcloudt network nat [ROUTER]        # Cloud NAT 設定
+
+gcloudt dns zones                   # Cloud DNS マネージドゾーン一覧
+gcloudt dns records ZONE            # ゾーン内のレコードセット一覧
 ```
 
 ### Tencent Cloud CLI (`tcclit`)
@@ -245,7 +273,39 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **images**: イメージ一覧
 - **templates**: インスタンステンプレート一覧
 - **groups**: インスタンスグループ一覧
+- **group-instances GROUP**: グループのメンバー一覧。zone/region を自動判定（unmanaged/managed 両対応）
 - **Helper**: `gce_ls_csv()` でマシンタイプ情報（vCPU、メモリ）を取得・整形
+
+### GCP Load Balancer (`g-cli/commands/clb`)
+
+- **ls**: forwarding-rule 一覧（target-proxy → url-map 解決）
+- **info NAME**: IP から backend インスタンスまでの詳細ツリー表示
+- **ip**: IP アドレスのみ表示
+- **addresses**: 予約済み Global/Regional IP 一覧（compute addresses）
+- **ssl-certs**: SSL 証明書一覧（compute ssl-certificates、旧方式）
+- **certificates**: Certificate Manager 証明書一覧
+- **backend-services**: Backend Service 一覧
+- **target-proxies**: HTTP/HTTPS Target Proxy を TYPE 列で結合表示
+- **cert-maps / cert-map-entries**: Certificate Manager maps / entries
+
+### GCP Project (`g-cli/commands/project`)
+
+- **describe [PROJECT]**: `gcloud projects describe`（既定: CLOUDSDK_CORE_PROJECT）
+- **list**: `gcloud projects list`
+- 注: Cloud Resource Manager API が無効なプロジェクトでは permission denied
+
+### GCP Network (`g-cli/commands/network`)
+
+- **ls**: VPC ネットワーク一覧（subnetMode は autoCreateSubnetworks から導出）
+- **subnets**: サブネット一覧
+- **routes**: ルート一覧（name / network / destRange / nextHop / priority を簡略化表示）
+- **routers**: Cloud Router 一覧
+- **nat [ROUTER]**: Cloud NAT 設定（router describe の nat 情報）
+
+### GCP DNS (`g-cli/commands/dns`)
+
+- **zones**: マネージドゾーン一覧
+- **records ZONE**: ゾーン内の record-sets 一覧
 
 ### GCP Firewall (`g-cli/commands/firewall`)
 
