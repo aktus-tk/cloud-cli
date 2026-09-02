@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+# ---------------------------------------------------------------------------
+# Tencent Cloud Load Balancer (CLB) — tccli clb のラッパー
+#
+# 分類: 全サブコマンド Read-only (Describe 系のみ)。
+#   tcclit lb ls            # ロードバランサー一覧
+#   tcclit lb listeners ID  # LB のリスナー一覧
+#   tcclit lb targets ID    # LB のバックエンド (リスナー/ルール単位)
+# ---------------------------------------------------------------------------
+
+lb_list () {
+  echo "Name,LoadBalancerId,Type,Forward,VIP,Status,ChargeType,Bandwidth,ProjectId,VpcId,SubnetId,CreateTime"
+  tccli clb DescribeLoadBalancers --Limit 100 --output json 2>/dev/null \
+    | jq -r '.LoadBalancerSet[]? | [
+        .LoadBalancerName,
+        .LoadBalancerId,
+        .LoadBalancerType,
+        (.Forward // "-"),
+        (.LoadBalancerVips | join(";")),
+        .Status,
+        .ChargeType // "-",
+        (.NetworkAttributes.InternetMaxBandwidthOut // "-"),
+        .ProjectId,
+        .VpcId // "-",
+        (.SubnetId // "-"),
+        .CreateTime
+      ] | @csv'
+}
+
+lb_get_id () {
+  local name_or_id=$1
+  if [[ "$name_or_id" == lb-* ]]; then
+    echo "$name_or_id"
+    return
+  fi
+  tccli clb DescribeLoadBalancers --Limit 100 --output json 2>/dev/null \
+    | jq -r --arg n "$name_or_id" '.LoadBalancerSet[]? | select(.LoadBalancerName == $n) | .LoadBalancerId' \
+    | head -1
+}
+
+lb_listeners () {
+  local id
+  id=$(lb_get_id "$1")
+  [[ -n "$id" ]] || { echo "no load balancer: $1" >&2; exit 1; }
+  echo "ListenerId,Protocol,Port,ListenerName"
+  tccli clb DescribeListeners --LoadBalancerId "$id" --output json 2>/dev/null \
+    | jq -r '.Listeners[]? | [.ListenerId, .Protocol, (.Port // "-"), .ListenerName] | @csv'
+}
+
+lb_targets () {
+  local id
+  id=$(lb_get_id "$1")
+  [[ -n "$id" ]] || { echo "no load balancer: $1" >&2; exit 1; }
+  echo "ListenerId,Protocol,Port,Rule(Domain/Url),TargetInstance,TargetIP,TargetPort,Weight,RegisteredTime"
+  tccli clb DescribeTargets --LoadBalancerId "$id" --output json 2>/dev/null \
+    | jq -r '.Listeners[]? as $l |
+        if ($l.Rules // [] | length) > 0 then
+          $l.Rules[]? as $r |
+            ($r.Targets // [])[]? | [
+              $l.ListenerId,
+              $l.Protocol,
+              ($l.Port // "-"),
+              ($r.Domain // "-") + ($r.Url // "-"),
+              .InstanceName,
+              (.PrivateIpAddresses | join(";")),
+              .Port,
+              .Weight,
+              .RegisteredTime
+            ] | @csv
+        else
+          ($l.Targets // [])[]? | [
+              $l.ListenerId,
+              $l.Protocol,
+              ($l.Port // "-"),
+              "-",
+              .InstanceName,
+              (.PrivateIpAddresses | join(";")),
+              .Port,
+              .Weight,
+              .RegisteredTime
+            ] | @csv
+        end'
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      lb_list
+    else
+      lb_list | column -t -s $','
+    fi
+    ;;
+  listeners)
+    if [[ "$1" == "--csv" ]]; then
+      lb_listeners "$2"
+    else
+      lb_listeners "$1" | column -t -s $','
+    fi
+    ;;
+  targets)
+    if [[ "$1" == "--csv" ]]; then
+      lb_targets "$2"
+    else
+      lb_targets "$1" | column -t -s $','
+    fi
+    ;;
+  help|-h|--help|"")
+    echo "lb commands (Tencent Cloud Load Balancer / tccli clb):"
+    echo "  lb ls                   ロードバランサー一覧 (--csv 可)"
+    echo "  lb listeners NAME|ID    リスナー一覧"
+    echo "  lb targets NAME|ID      バックエンド一覧 (リスナー/ルール単位)"
+    echo
+    echo "Examples:"
+    echo "  tcclit lb ls"
+    echo "  tcclit lb listeners plgl"
+    echo "  tcclit lb targets plgl"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit lb help" >&2
+    exit 1
+    ;;
+esac

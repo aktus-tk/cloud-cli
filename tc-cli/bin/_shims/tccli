@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 real="${CLOUD_CLI_REAL_TCCLI:?CLOUD_CLI_REAL_TCCLI not set}"
+args=("$@")
+# direnv 等で TENCENTCLOUD_PROFILE が設定されている場合は --profile を自動注入する
+if [[ -n "${TENCENTCLOUD_PROFILE:-}" ]]; then
+  args=(--profile "$TENCENTCLOUD_PROFILE" "${args[@]}")
+fi
 if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
   printf 'debug:' >&2
-  printf ' %q' "$real" "$@" >&2
+  printf ' %q' "$real" "${args[@]}" >&2
   printf '\n' >&2
 fi
-exec "$real" "$@"
+exec "$real" "${args[@]}"

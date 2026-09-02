@@ -30,10 +30,11 @@ shift
 
 if [[ "$_debug" -eq 1 ]]; then
   export CLOUD_CLI_DEBUG=1
-  if ! _real="$(command -v tccli)"; then
-    echo "tcclit: tccli not found on PATH (--debug needs resolved tccli)" >&2
-    exit 1
-  fi
+fi
+
+# tccli を常に shim 経由にする (--profile 自動注入 / --debug 時のコマンド表示)。
+# shim が自分自身を再解決しないよう、先に実体を確定してから PATH へ追加する。
+if _real="$(command -v tccli)"; then
   export CLOUD_CLI_REAL_TCCLI="$_real"
   export PATH="${_bin}/_shims:${PATH}"
 fi

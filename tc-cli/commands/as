@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+# ---------------------------------------------------------------------------
+# Tencent Cloud Auto Scaling (弹性伸缩) — tccli autoscaling のラッパー
+#
+# 分類: 全サブコマンド Read-only (Describe 系のみ)。
+#   tcclit as ls           # スケーリンググループ一覧
+#   tcclit as show NAME|ID # グループ詳細 (起動設定・縮容ポリシー・スケーリングモード・フック)
+#   tcclit as hooks        # 全グループのライフサイクルフック一覧
+#   tcclit as activities [N] # 直近のスケール活動
+#   tcclit as configs      # 起動設定 (Launch Configuration) 一覧
+#   tcclit as instances    # 各グループの現在のインスタンスと状態
+# ---------------------------------------------------------------------------
+
+as_group_filter () {
+  # グループID配列から Describe 系 API 用 Filters を生成
+  local gid=$1
+  printf '[{"Name":"auto-scaling-group-id","Values":["%s"]}]' "$gid"
+}
+
+as_groups () {
+  tccli autoscaling DescribeAutoScalingGroups --output json --cli-unfold-argument \
+    --Limit 100 \
+    | jq -cr '.AutoScalingGroupSet[]? // empty'
+}
+
+as_group_list () {
+  # CSV: 名前, ASG-ID, 状態, 起動設定名, 起動設定ID, 最小, 最大, 期望, InService,
+  #      縮容ポリシー, スケーリングモード, サブネット, 作成時刻
+  echo "GroupName,GroupId,Status,LaunchConfigName,LaunchConfigId,MinSize,MaxSize,Desired,InService,TerminationPolicy,ScalingMode,Subnets,CreatedTime"
+  as_groups | jq -r '
+    [
+      .AutoScalingGroupName,
+      .AutoScalingGroupId,
+      .AutoScalingGroupStatus,
+      (.LaunchConfigurationName // "-"),
+      (.LaunchConfigurationId // "-"),
+      .MinSize,
+      .MaxSize,
+      (.DesiredCapacity // "-"),
+      (.InServiceInstanceCount // "-"),
+      ((.TerminationPolicySet // []) | join(";")),
+      (.ServiceSettings.ScalingMode // "-"),
+      ((.SubnetIdSet // []) | join(";")),
+      .CreatedTime
+    ] | @csv'
+}
+
+as_group_detail () {
+  local name_or_id=$1
+  local obj
+  obj=$(as_groups | jq -c --arg q "$name_or_id" '
+    select(.AutoScalingGroupName == $q or .AutoScalingGroupId == $q) | .')
+  if [[ -z "$obj" ]]; then
+    echo "no scaling group: $name_or_id" >&2
+    exit 1
+  fi
+  echo "$obj" | jq -r '
+    "GroupName:      \(.AutoScalingGroupName)",
+    "GroupId:        \(.AutoScalingGroupId)",
+    "Status:         \(.AutoScalingGroupStatus // "-") / enabled=\(.EnabledStatus // "-") / in_activity=\(.InActivityStatus // "-")",
+    "LaunchConfig:   \(.LaunchConfigurationName // "-") (\(.LaunchConfigurationId // "-"))",
+    "Capacity:       min=\(.MinSize) max=\(.MaxSize) desired=\(.DesiredCapacity // "-") in_service=\(.InServiceInstanceCount // "-")",
+    "VpcId:          \(.VpcId // "-")",
+    "Subnets:        \((.SubnetIdSet // []) | join(","))",
+    "Termination:    \((.TerminationPolicySet // []) | join(";"))",
+    "ScalingMode:    \(.ServiceSettings.ScalingMode // "-")",
+    "CreatedTime:    \(.CreatedTime // "-")"'
+  local gid
+  gid=$(jq -r '.AutoScalingGroupId' <<<"$obj")
+  echo "Lifecycle Hooks:"
+  as_group_hooks "$gid" | { read -r _; cat; }
+}
+
+as_group_hooks () {
+  # グループIDのフック一覧 (CSV)。フックなしは "(none)" 行のみ。
+  local gid=$1
+  local f
+  f=$(as_group_filter "$gid")
+  local out
+  out=$(tccli autoscaling DescribeLifecycleHooks --Filters "$f" --Limit 100 --output json 2>/dev/null)
+  if [[ -z "$out" ]] || [[ "$(jq '.LifecycleHookSet | length' <<<"$out")" -eq 0 ]]; then
+    echo "HookName,Transition,Mode,TimeoutSec,DefaultResult,CommandId"
+    echo "(none),-,-,-,-,-"
+    return
+  fi
+  echo "HookName,Transition,Mode,TimeoutSec,DefaultResult,CommandId"
+  jq -r '.LifecycleHookSet[] | [
+      .LifecycleHookName // "-",
+      .LifecycleTransition // "-",
+      .LifecycleTransitionType // "-",
+      (.HeartbeatTimeout // "-"),
+      .DefaultResult // "-",
+      (.LifecycleCommand.CommandId // "-")
+    ] | @csv' <<<"$out"
+}
+
+as_hooks () {
+  # 全グループのライフサイクルフック一覧
+  echo "GroupName,GroupId,HookName,Transition,Mode,TimeoutSec,DefaultResult,CommandId"
+  while IFS= read -r g; do
+    name=$(jq -r '.AutoScalingGroupName' <<<"$g")
+    gid=$(jq -r '.AutoScalingGroupId' <<<"$g")
+    f=$(as_group_filter "$gid")
+    out=$(tccli autoscaling DescribeLifecycleHooks --Filters "$f" --Limit 100 --output json 2>/dev/null)
+    if [[ -z "$out" ]] || [[ "$(jq '.LifecycleHookSet | length' <<<"$out")" -eq 0 ]]; then
+      printf '%s,%s,(none),-,-,-,-,-\n' "$name" "$gid"
+      continue
+    fi
+    jq -r --arg name "$name" --arg gid "$gid" '
+      .LifecycleHookSet[] | [
+        $name, $gid,
+        .LifecycleHookName // "-",
+        .LifecycleTransition // "-",
+        .LifecycleTransitionType // "-",
+        (.HeartbeatTimeout // "-"),
+        .DefaultResult // "-",
+        (.LifecycleCommand.CommandId // "-")
+      ] | @csv' <<<"$out"
+  done < <(as_groups)
+}
+
+as_activities () {
+  # 直近のスケール活動 (SCALE_IN / SCALE_OUT / REMOVE_INSTANCES 等)
+  local limit="${1:-10}"
+  echo "GroupName,GroupId,Type,Status,StartTime,EndTime,InstanceId,InstanceStatus"
+  while IFS= read -r g; do
+    name=$(jq -r '.AutoScalingGroupName' <<<"$g")
+    gid=$(jq -r '.AutoScalingGroupId' <<<"$g")
+    f=$(as_group_filter "$gid")
+    tccli autoscaling DescribeAutoScalingActivities \
+      --Filters "$f" --Limit "$limit" --output json 2>/dev/null \
+      | jq -r --arg name "$name" --arg gid "$gid" '
+        .ActivitySet[]? | [
+          $name, $gid,
+          .ActivityType,
+          (.StatusCode // "-"),
+          .StartTime,
+          (.EndTime // "-"),
+          ([.ActivityRelatedInstanceSet[]? | .InstanceId] | join(";")),
+          ([.ActivityRelatedInstanceSet[]? | .InstanceStatus] | join(";"))
+        ] | @csv'
+  done < <(as_groups)
+}
+
+as_configs () {
+  echo "ConfigName,ConfigId,ImageId,InstanceType,SystemDisk,CreatedTime"
+  tccli autoscaling DescribeLaunchConfigurations --output json --cli-unfold-argument \
+    --Limit 100 \
+    | jq -r '.LaunchConfigurationSet[]? | [
+        .LaunchConfigurationName,
+        .LaunchConfigurationId,
+        .ImageId,
+        (.InstanceType // "-"),
+        ((.SystemDisk.DiskType // "-") + ":" + ((.SystemDisk.DiskSize // "-") | tostring)),
+        .CreatedTime
+      ] | @csv'
+}
+
+as_instances () {
+  echo "GroupName,GroupId,InstanceId,InstanceType,LifeCycleState,HealthStatus,CreationType,ProtectedFromScaleIn,AddTime,Zone"
+  while IFS= read -r g; do
+    name=$(jq -r '.AutoScalingGroupName' <<<"$g")
+    gid=$(jq -r '.AutoScalingGroupId' <<<"$g")
+    f=$(as_group_filter "$gid")
+    tccli autoscaling DescribeAutoScalingInstances \
+      --Filters "$f" --Limit 100 --output json 2>/dev/null \
+      | jq -r --arg name "$name" --arg gid "$gid" '
+        .AutoScalingInstanceSet[]? | [
+          $name, $gid,
+          .InstanceId,
+          .InstanceType // "-",
+          .LifeCycleState // "-",
+          .HealthStatus // "-",
+          .CreationType // "-",
+          .ProtectedFromScaleIn // "-",
+          .AddTime // "-",
+          .Zone // "-"
+        ] | @csv'
+  done < <(as_groups)
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      as_group_list
+    else
+      as_group_list | column -t -s $','
+    fi
+    ;;
+  show)
+    as_group_detail "$1"
+    ;;
+  hooks)
+    if [[ "$1" == "--csv" ]]; then
+      as_hooks
+    else
+      as_hooks | column -t -s $','
+    fi
+    ;;
+  activities)
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+      as_activities "$1"
+    else
+      as_activities
+    fi
+    ;;
+  configs)
+    if [[ "$1" == "--csv" ]]; then
+      as_configs
+    else
+      as_configs | column -t -s $','
+    fi
+    ;;
+  instances)
+    if [[ "$1" == "--csv" ]]; then
+      as_instances
+    else
+      as_instances | column -t -s $','
+    fi
+    ;;
+  help|-h|--help|"")
+    echo "as commands (Tencent Cloud Auto Scaling / tccli autoscaling):"
+    echo "  as ls           スケーリンググループ一覧 (--csv 可)"
+    echo "  as show NAME|ID スケーリンググループ詳細 (起動設定・縮容ポリシー・スケーリングモード・フック)"
+    echo "  as hooks        全グループのライフサイクルフック一覧"
+    echo "  as activities [N]  直近 N 件 (既定 10) のスケール活動"
+    echo "  as configs      起動設定 (Launch Configuration) 一覧"
+    echo "  as instances    各グループの現在のインスタンスと状態"
+    echo
+    echo "Examples:"
+    echo "  tcclit as ls"
+    echo "  tcclit as show plgl"
+    echo "  tcclit as hooks"
+    echo "  tcclit as activities 20"
+    echo "  tcclit as configs"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit as help" >&2
+    exit 1
+    ;;
+esac
