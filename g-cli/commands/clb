@@ -240,6 +240,96 @@ clb_target_proxies() {
     awk -F'\t' 'NF>0 { printf "%s", $1; for (i=2; i<=NF; i++) printf ",%s", $i; print "" }'
 }
 
+# SSL 証明書の期限状態を判定（certs / proxy-certs 共通）
+# 引数: expireTime (ISO8601, 例: 2026-08-31T07:59:59.000-07:00)
+# 返り値: OK (有効期限内) / EXPIRING (30日以内) / EXPIRED (期限切れ)
+cert_status() {
+  local expire=$1
+  local expire_epoch now_epoch
+  if [[ -z "$expire" ]]; then
+    echo "OK"
+    return
+  fi
+  if ! expire_epoch=$(date -d "$expire" +%s 2>/dev/null); then
+    echo "UNKNOWN"
+    return
+  fi
+  now_epoch=$(date +%s)
+  if (( expire_epoch <= now_epoch )); then
+    echo "EXPIRED"
+  elif (( expire_epoch - now_epoch <= 2592000 )); then  # 30日 = 2592000秒
+    echo "EXPIRING"
+  else
+    echo "OK"
+  fi
+}
+
+# gcloud を実行し、失敗 (exit != 0 または stderr にエラー/警告) を検出したら stderr にエラーを出して return 1
+# 正常時は gcloud の stdout をそのまま呼び出し元へ渡す
+# 注: gcloud list はプロジェクト名誤り等でも exit 0 + stderr 警告 ("Some requests did not succeed") を返すため、
+#     exit status だけでは「証明書ゼロ」と区別できない。stderr も検査する。
+gcloud_checked() {
+  local err_file rc msg
+  err_file=$(mktemp)
+  "$@" 2>"$err_file"
+  rc=$?
+  if (( rc != 0 )) || [[ -s "$err_file" ]]; then
+    msg=$(tr '\n' ' ' < "$err_file")
+    echo "clb: gcloud command failed: $*${msg:+ ($msg)}" >&2
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+}
+
+# SSL 証明書一覧（状態付き）
+clb_certs() {
+  local json
+  json=$(gcloud_checked gcloud compute ssl-certificates list --format=json) || exit 1
+
+  echo "NAME,TYPE,CREATE_TIME,EXPIRE_TIME,SAN,STATUS"
+
+  echo "$json" | \
+  jq -r '.[] | [.name, .type, .creationTimestamp, .expireTime, (.subjectAlternativeNames | join("; "))] | @csv' | \
+  while IFS=',' read -r name cert_type create expire san; do
+    # クォート除去
+    name=${name//\"/}; cert_type=${cert_type//\"/}; create=${create//\"/}; expire=${expire//\"/}; san=${san//\"/}
+    local status
+    status=$(cert_status "$expire")
+    echo "$name,$cert_type,$create,$expire,$san,$status"
+  done
+}
+
+# target-https-proxies ごとの証明書紐付けと状態
+clb_proxy_certs() {
+  # 証明書名 → expireTime のマップを構築
+  local -A cert_expire=()
+  local name expire
+  local ssl_list
+  ssl_list=$(gcloud_checked gcloud compute ssl-certificates list --format="value(name,expireTime)") || exit 1
+  if [[ -n "$ssl_list" ]]; then
+    while IFS=$'\t' read -r name expire; do
+      cert_expire["$name"]="$expire"
+    done <<< "$ssl_list"
+  fi
+
+  local proxies_json
+  proxies_json=$(gcloud_checked gcloud compute target-https-proxies list --format=json) || exit 1
+
+  echo "PROXY,CERT_NAME,STATUS,EXPIRE_TIME"
+
+  echo "$proxies_json" | \
+  jq -r '.[] | .name as $proxy | .sslCertificates[]? | [$proxy, (split("/") | last)] | @csv' | \
+  while IFS=',' read -r proxy cert; do
+    # クォート除去
+    proxy=${proxy//\"/}; cert=${cert//\"/}
+    local expire="${cert_expire[$cert]:-}"
+    local status
+    status=$(cert_status "$expire")
+    echo "$proxy,$cert,$status,$expire"
+  done
+}
+
 case "$cmd" in
   ls)
     if [[ "$1" == "--csv" ]]; then
@@ -318,6 +408,22 @@ case "$cmd" in
       clb_target_proxies | column -t -s ','
     fi
     ;;
+  certs)
+    if [[ "$1" == "--csv" ]]; then
+      clb_certs
+    else
+      clb_certs | column -t -s ','
+      exit "${PIPESTATUS[0]}"
+    fi
+    ;;
+  proxy-certs)
+    if [[ "$1" == "--csv" ]]; then
+      clb_proxy_certs
+    else
+      clb_proxy_certs | column -t -s ','
+      exit "${PIPESTATUS[0]}"
+    fi
+    ;;
   help|*)
     echo "clb (Cloud Load Balancer) commands:"
     echo "  ls           list load balancers (forwarding-rules + target-proxy + url-map)"
@@ -332,5 +438,7 @@ case "$cmd" in
     echo "  target-proxies [--csv]         HTTP + HTTPS target proxies (combined, TYPE col)"
     echo "  cert-maps [--csv] [gcloud options...]  Certificate Manager maps (gcloud certificate-manager maps list)"
     echo "  cert-map-entries [--csv] MAP [opts...]  map entries (gcloud certificate-manager maps entries list --map=MAP)"
+    echo "  certs [--csv]        SSL certificates with status (OK/EXPIRING/EXPIRED)"
+    echo "  proxy-certs [--csv]  SSL certs per target-https-proxy with status"
     ;;
 esac

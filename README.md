@@ -245,8 +245,15 @@ gcloudt gcs rm gs://BUCKET/PREFIX/ -r       # 再帰削除
 
 ```bash
 gcloudt clb ls                      # ロードバランサー一覧
-gcloudt clb show NAME               # 詳細情報
+gcloudt clb info NAME               # 詳細情報
+gcloudt clb certs                   # SSL 証明書一覧（状態: OK / EXPIRING / EXPIRED）
+gcloudt clb certs --csv             # SSL 証明書一覧（CSV）
+gcloudt clb proxy-certs             # target-https-proxy ごとの証明書紐付けと状態
+gcloudt clb proxy-certs --csv       # 同上（CSV）
 ```
+
+`certs` / `proxy-certs` の STATUS は証明書の有効期限 (`expireTime`) に基づき、
+30 日以内に期限切れのものを `EXPIRING`、期限切れ済みのものを `EXPIRED` と表示する。
 
 ### Tencent Cloud CLI (`tcclit`)
 
