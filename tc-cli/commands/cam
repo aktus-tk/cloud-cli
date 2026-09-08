@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: tcclit cam <command> [args]
+
+identity and access management (Tencent Cloud CAM)
+
+commands:
+  me [--json]                         current caller identity and attached policies
+  account [--json]                    account summary and AppId
+  policy ls [--csv]                   customer managed policies
+  policy show <policy-id> [--json]    policy details
+  user ls [--csv]                     sub-users
+  user show <name> [--json]           user details and attached policies
+
+examples:
+  tcclit cam me
+  tcclit cam account
+  tcclit cam policy ls
+  tcclit cam policy show 123456
+  tcclit cam user ls
+  tcclit cam user show alice
+EOF
+}
+
+cam_profile() {
+  printf '%s' "${TENCENT_PROFILE:-${TENCENTCLOUD_PROFILE:-default}}"
+}
+
+cam_identity() {
+  tccli sts GetCallerIdentity --output json
+}
+
+cam_uin() {
+  local identity uin
+  identity="$(cam_identity)"
+  uin="$(echo "$identity" | jq -r '.UserId // empty')"
+  if [[ -z "$uin" || "$uin" == "null" ]]; then
+    uin="$(echo "$identity" | jq -r '.AccountId // empty')"
+  fi
+  [[ -n "$uin" && "$uin" != "null" ]] || {
+    echo "cam: failed to resolve UIN from caller identity" >&2
+    exit 1
+  }
+  printf '%s' "$uin"
+}
+
+cam_me() {
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  local profile identity appid account policies role role_id identity_type
+  profile="$(cam_profile)"
+  identity="$(cam_identity)"
+  appid="$(tccli cam GetUserAppId --output json)"
+  account="$(tccli cam GetAccountSummary --output json 2>/dev/null || echo '{}')"
+  identity_type="$(echo "$identity" | jq -r '.Type // empty')"
+  role='{}'
+  policies='{"PolicyList":[],"TotalNum":0}'
+
+  if [[ "$identity_type" == "CAMRole" ]]; then
+    role_id="$(echo "$identity" | jq -r '.UserId // empty' | cut -d: -f1)"
+    if [[ -n "$role_id" ]]; then
+      role="$(tccli cam GetRole --RoleId "$role_id" --output json 2>/dev/null || echo '{}')"
+      policies="$(tccli cam ListAttachedRolePolicies \
+        --RoleId "$role_id" --Rp 100 --Page 1 --output json 2>/dev/null || echo '{"List":[],"TotalNum":0}')"
+    fi
+  else
+    local uin
+    uin="$(echo "$identity" | jq -r '.UserId // .AccountId // empty')"
+    policies="$(tccli cam ListAttachedUserAllPolicies \
+      --TargetUin "$uin" --Rp 100 --Page 1 --AttachType 0 --output json 2>/dev/null || echo '{"PolicyList":[],"TotalNum":0}')"
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n \
+      --arg profile "$profile" \
+      --argjson identity "$identity" \
+      --argjson appid "$appid" \
+      --argjson account "$account" \
+      --argjson role "$role" \
+      --argjson policies "$policies" \
+      '{profile: $profile, identity: $identity, appid: $appid, account: $account, role: $role, policies: $policies}'
+    return 0
+  fi
+
+  echo "Profile: $profile"
+  echo "================================================================"
+  echo "$identity" | jq -r '
+    "Arn: \(.Arn // "-")",
+    "AccountId: \(.AccountId // "-")",
+    "UserId: \(.UserId // "-")",
+    "PrincipalId: \(.PrincipalId // "-")",
+    "Type: \(.Type // "-")"
+  '
+  if [[ "$identity_type" == "CAMRole" && "$(echo "$role" | jq -r '.RoleInfo.RoleName // empty')" != "" ]]; then
+    echo ""
+    echo "=== Role ==="
+    echo "$role" | jq -r '
+      "RoleName: \(.RoleInfo.RoleName // "-")",
+      "RoleId: \(.RoleInfo.RoleId // "-")",
+      "Description: \(.RoleInfo.Description // "-")",
+      "AddTime: \(.RoleInfo.AddTime // "-")"
+    '
+  fi
+  echo ""
+  echo "=== AppId ==="
+  echo "$appid" | jq -r '"AppId: \(.AppId // "-")"'
+  echo ""
+  echo "=== Account Summary ==="
+  if [[ "$(echo "$account" | jq 'length')" -gt 0 ]]; then
+    echo "$account" | jq -r '
+      "Users: \(.User // .Users // "-")",
+      "Groups: \(.Group // .Groups // "-")",
+      "Policies: \(.Policies // "-")",
+      "Roles: \(.Roles // "-")"
+    '
+  else
+    echo "(not available)"
+  fi
+  echo ""
+  echo "=== Attached Policies ($(echo "$policies" | jq -r '.TotalNum // 0')) ==="
+  if [[ "$identity_type" == "CAMRole" ]]; then
+    echo "$policies" | jq -r '
+      (.List // [])[]
+      | [
+          (.PolicyName // "-"),
+          (.PolicyId // "-"),
+          (.Description // "-"),
+          (.AddTime // "-"),
+          (.PolicyType // "-")
+        ] | @tsv
+    ' | {
+      echo -e "PolicyName\tPolicyId\tDescription\tAddTime\tPolicyType"
+      cat
+    } | column -t -s $'\t'
+  else
+    echo "$policies" | jq -r '
+      (.PolicyList // [])[]
+      | [
+          (.PolicyName // "-"),
+          (.PolicyId // "-"),
+          (.Remark // "-"),
+          (.AddTime // "-"),
+          (if .AttachType == 1 then "user" elif .AttachType == 2 then "group" else (.AttachType // "-") end)
+        ] | @tsv
+    ' | {
+      echo -e "PolicyName\tPolicyId\tRemark\tAddTime\tAttachType"
+      cat
+    } | column -t -s $'\t'
+  fi
+}
+
+cam_account() {
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  local profile appid account
+  profile="$(cam_profile)"
+  appid="$(tccli cam GetUserAppId --output json)"
+  account="$(tccli cam GetAccountSummary --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n \
+      --arg profile "$profile" \
+      --argjson appid "$appid" \
+      --argjson account "$account" \
+      '{profile: $profile, appid: $appid, account: $account}'
+    return 0
+  fi
+
+  echo "Profile: $profile"
+  echo "================================================================"
+  echo "$appid" | jq -r '"AppId: \(.AppId // "-")"'
+  echo ""
+  echo "$account" | jq -r '
+    "Users: \(.Users // "-")",
+    "Groups: \(.Groups // "-")",
+    "Policies: \(.Policies // "-")",
+    "Roles: \(.Roles // "-")"
+  '
+}
+
+policy_ls_csv() {
+  echo "PolicyId,PolicyName,Type,AddTime,UpdateTime,Description"
+  tccli cam ListPolicies --Rp 100 --Page 1 --Scope Local --output json | jq -r '
+    (.List // [])[]
+    | [
+        (.PolicyId // ""),
+        (.PolicyName // ""),
+        (.Type // ""),
+        (.AddTime // ""),
+        (.UpdateTime // ""),
+        (.Description // "")
+      ] | @csv'
+}
+
+policy_show() {
+  local policy_id="" fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        [[ -z "$policy_id" ]] && policy_id="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$policy_id" ]]; then
+    echo "usage: tcclit cam policy show <policy-id> [--json]" >&2
+    exit 1
+  fi
+
+  local json
+  json="$(tccli cam GetPolicy --PolicyId "$policy_id" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    "PolicyName: \(.PolicyName // "-")",
+    "PolicyId: \(.PolicyId // "-")",
+    "Type: \(.Type // "-")",
+    "Description: \(.Description // "-")",
+    "AddTime: \(.AddTime // "-")",
+    "UpdateTime: \(.UpdateTime // "-")",
+    "PresetAlias: \(.PresetAlias // "-")",
+    "",
+    "=== PolicyDocument ===",
+    (.PolicyDocument // "{}")
+  '
+}
+
+user_ls_csv() {
+  echo "Uin,Name,Uid,Remark,ConsoleLogin,PhoneNum,Email"
+  tccli cam ListUsers --Rp 100 --Page 1 --output json | jq -r '
+    (.Data // [])[]
+    | [
+        (.Uin // ""),
+        (.Name // ""),
+        (.Uid // ""),
+        (.Remark // ""),
+        (.ConsoleLogin // ""),
+        (.PhoneNum // ""),
+        (.Email // "")
+      ] | @csv'
+}
+
+user_show() {
+  local name="" fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        [[ -z "$name" ]] && name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: tcclit cam user show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local user policies uin
+  user="$(tccli cam GetUser --Name "$name" --output json)"
+  uin="$(echo "$user" | jq -r '.Uin // empty')"
+  policies="$(tccli cam ListAttachedUserAllPolicies \
+    --TargetUin "$uin" --Rp 100 --Page 1 --AttachType 0 --output json 2>/dev/null || echo '{"PolicyList":[],"TotalNum":0}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson user "$user" --argjson policies "$policies" \
+      '{user: $user, policies: $policies}'
+    return 0
+  fi
+
+  echo "$user" | jq -r '
+    "Name: \(.Name // "-")",
+    "Uin: \(.Uin // "-")",
+    "Uid: \(.Uid // "-")",
+    "Remark: \(.Remark // "-")",
+    "ConsoleLogin: \(.ConsoleLogin // "-")",
+    "Email: \(.Email // "-")",
+    "PhoneNum: \(.PhoneNum // "-")"
+  '
+  echo ""
+  echo "=== Attached Policies ($(echo "$policies" | jq -r '.TotalNum // 0')) ==="
+  echo "$policies" | jq -r '
+    (.PolicyList // [])[]
+    | [
+        (.PolicyName // "-"),
+        (.PolicyId // "-"),
+        (.Remark // "-"),
+        (.AddTime // "-"),
+        (if .AttachType == 1 then "user" elif .AttachType == 2 then "group" else (.AttachType // "-") end)
+      ] | @tsv
+  ' | {
+    echo -e "PolicyName\tPolicyId\tRemark\tAddTime\tAttachType"
+    cat
+  } | column -t -s $'\t'
+}
+
+case "$sub" in
+  me|whoami)
+    cam_me "$@"
+    ;;
+  account|summary)
+    cam_account "$@"
+    ;;
+  policy)
+    cmd="${1:-}"; shift || true
+    case "$cmd" in
+      ls|list)
+        if [[ "${1:-}" == "--csv" ]]; then
+          policy_ls_csv
+        else
+          policy_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        policy_show "$@"
+        ;;
+      *)
+        echo "policy commands:"
+        echo "  ls [--csv]              list customer managed policies"
+        echo "  show <policy-id>        policy details"
+        ;;
+    esac
+    ;;
+  user)
+    cmd="${1:-}"; shift || true
+    case "$cmd" in
+      ls|list)
+        if [[ "${1:-}" == "--csv" ]]; then
+          user_ls_csv
+        else
+          user_ls_csv | column -s, -t
+        fi
+        ;;
+      show|describe)
+        user_show "$@"
+        ;;
+      *)
+        echo "user commands:"
+        echo "  ls [--csv]              list sub-users"
+        echo "  show <name> [--json]    user details and policies"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown cam command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
