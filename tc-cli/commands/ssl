@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+# ---------------------------------------------------------------------------
+# Tencent Cloud SSL Certificate Service — tccli ssl のラッパー
+#
+# 分類: 全サブコマンド Read-only (Describe 系のみ)。
+#   tcclit ssl search QUERY   # 証明書検索 (ドメイン名・ID 等)
+#   tcclit ssl show CERT_ID   # 証明書詳細
+# ---------------------------------------------------------------------------
+
+ssl_search () {
+  local query=$1
+  [[ -n "$query" ]] || { echo "usage: tcclit ssl search QUERY" >&2; exit 1; }
+  echo "CertificateId,Alias,Domain,CertEndTime,StatusName,From,BoundCount"
+  tccli ssl DescribeCertificates --SearchKey "$query" --output json 2>/dev/null \
+    | jq -r '.Certificates // [] | .[] | [
+        .CertificateId,
+        .Alias,
+        (.Domain // ((.SubjectAltName // []) | join(";"))),
+        .CertEndTime,
+        .StatusName,
+        .From,
+        ((.BoundResource // []) | length)
+      ] | @csv'
+}
+
+ssl_show () {
+  local cert_id=$1
+  [[ -n "$cert_id" ]] || { echo "usage: tcclit ssl show CERT_ID" >&2; exit 1; }
+  tccli ssl DescribeCertificates --SearchKey "$cert_id" --output json 2>/dev/null \
+    | jq -r --arg id "$cert_id" '
+      (.Certificates // [])[] | select(.CertificateId == $id) |
+      . as $c |
+      [
+        "CertificateId: \($c.CertificateId // "-")",
+        "Alias: \($c.Alias // "-")",
+        "Domain: \($c.Domain // "-")",
+        "CertBeginTime: \($c.CertBeginTime // "-")",
+        "CertEndTime: \($c.CertEndTime // "-")",
+        "StatusName: \($c.StatusName // "-")",
+        "Product: \($c.ProductZhName // $c.ProductName // "-")",
+        "From: \($c.From // "-")",
+        "RenewAble: \($c.RenewAble // "-")",
+        "Deployable: \($c.Deployable // "-")",
+        "SubjectAltName: \((($c.SubjectAltName // []) | join(", ")) // "-")",
+        (if (($c.BoundResource // []) | length) > 0 then
+          "BoundResource:",
+          ($c.BoundResource[] | "  \(.ResourceType // "-") \(.ResourceId // "-") \(.Domain // "")")
+        else
+          "BoundResource: (none)"
+        end)
+      ] | .[]'
+}
+
+case "$cmd" in
+  search)
+    if [[ "$2" == "--csv" ]]; then
+      ssl_search "$1"
+    else
+      ssl_search "$1" | column -t -s $','
+    fi
+    ;;
+  show)
+    ssl_show "$1"
+    ;;
+  help|-h|--help|"")
+    echo "ssl commands (Tencent Cloud SSL Certificate Service / tccli ssl):"
+    echo "  search QUERY         証明書検索 (DescribeCertificates --SearchKey)"
+    echo "  search QUERY --csv   CSV 出力"
+    echo "  show CERT_ID         証明書詳細 (DescribeCertificates --SearchKey)"
+    echo
+    echo "Examples:"
+    echo "  tcclit ssl search a2086"
+    echo "  tcclit ssl show YhZIsqUe"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit ssl help" >&2
+    exit 1
+    ;;
+esac

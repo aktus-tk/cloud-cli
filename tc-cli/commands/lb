@@ -87,6 +87,25 @@ lb_targets () {
         end'
 }
 
+lb_rules () {
+  local id
+  id=$(lb_get_id "$1")
+  [[ -n "$id" ]] || { echo "no load balancer: $1" >&2; exit 1; }
+  echo "ListenerId,Protocol,Port,Domain,Url,CertId,Scheduler,CreateTime"
+  tccli clb DescribeListeners --LoadBalancerId "$id" --output json 2>/dev/null \
+    | jq -r '.Listeners[]? as $l |
+        ($l.Rules // [])[]? | [
+          $l.ListenerId,
+          $l.Protocol,
+          ($l.Port // "-"),
+          (.Domain // "-"),
+          (.Url // "-"),
+          ((.Certificate.CertId // "-")),
+          (.Scheduler // "-"),
+          (.CreateTime // "-")
+        ] | @csv'
+}
+
 case "$cmd" in
   ls)
     if [[ "$1" == "--csv" ]]; then
@@ -109,15 +128,24 @@ case "$cmd" in
       lb_targets "$1" | column -t -s $','
     fi
     ;;
+  rules)
+    if [[ "$1" == "--csv" ]]; then
+      lb_rules "$2"
+    else
+      lb_rules "$1" | column -t -s $','
+    fi
+    ;;
   help|-h|--help|"")
     echo "lb commands (Tencent Cloud Load Balancer / tccli clb):"
     echo "  lb ls                   ロードバランサー一覧 (--csv 可)"
     echo "  lb listeners NAME|ID    リスナー一覧"
+    echo "  lb rules NAME|ID        SNI ルール一覧 (ドメイン・証明書 ID)"
     echo "  lb targets NAME|ID      バックエンド一覧 (リスナー/ルール単位)"
     echo
     echo "Examples:"
     echo "  tcclit lb ls"
     echo "  tcclit lb listeners plgl"
+    echo "  tcclit lb rules plgl"
     echo "  tcclit lb targets plgl"
     ;;
   *)

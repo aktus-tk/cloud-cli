@@ -267,18 +267,41 @@ tcclit cvm start NAME   # インスタンスを起動
 tcclit cvm stop NAME    # 停止コマンドを出力（print only）
 ```
 
-#### VPC
-
-```bash
-tcclit vpc ls           # VPC 一覧
-tcclit vpc show ID      # VPC 詳細
-```
-
 #### Tencent EdgeOne (TEO)
 
 ```bash
-tcclit teo ls           # EdgeOne ゾーン一覧
-tcclit teo show ZONE    # ゾーン詳細
+tcclit teo zones                              # EdgeOne ゾーン一覧
+tcclit teo acceleration-domains ZONE_ID       # 加速ドメイン一覧
+tcclit teo describe-rules ZONE_ID             # ルールエンジン
+```
+
+#### CDN
+
+```bash
+tcclit cdn ls                    # CDN ドメイン一覧
+tcclit cdn config DOMAIN         # ドメイン設定 (HTTPS 証明書等)
+```
+
+#### SSL Certificate
+
+```bash
+tcclit ssl search QUERY          # 証明書検索 (ドメイン名・ID)
+tcclit ssl show CERT_ID          # 証明書詳細
+```
+
+#### Load Balancer (CLB)
+
+```bash
+tcclit lb ls                     # ロードバランサー一覧
+tcclit lb listeners NAME|ID      # リスナー一覧
+tcclit lb rules NAME|ID          # SNI ルール一覧 (ドメイン・証明書 ID)
+tcclit lb targets NAME|ID        # バックエンド一覧
+```
+
+#### VPC
+
+```bash
+tcclit vpc sg                    # セキュリティグループ一覧
 ```
 
 ## プロジェクト構造

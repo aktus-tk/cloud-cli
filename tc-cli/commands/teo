@@ -14,20 +14,73 @@ teo_describe_rules () {
   fi
 }
 
+teo_acceleration_domains () {
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    local zone=$1
+    shift
+    tccli teo DescribeAccelerationDomains --ZoneId "$zone" "$@"
+  else
+    tccli teo DescribeAccelerationDomains "$@"
+  fi
+}
+
+teo_acceleration_domains_ls () {
+  local zone=$1
+  [[ -n "$zone" ]] || { echo "usage: tcclit teo acceleration-domains ZONE_ID" >&2; exit 1; }
+  echo "ZoneId,DomainName,DomainStatus,Origin,OriginProtocol,Cname,CertMode,CertExpire,CertStatus,CreatedOn"
+  tccli teo DescribeAccelerationDomains --ZoneId "$zone" --output json 2>/dev/null \
+    | jq -r --arg z "$zone" '
+      .AccelerationDomains // [] | sort_by(.DomainName) | .[] | [
+        ($z),
+        .DomainName,
+        .DomainStatus,
+        (.OriginDetail.Origin // "-"),
+        .OriginProtocol,
+        .Cname,
+        (.Certificate.Mode // "-"),
+        ((.Certificate.List // [])[0].ExpireTime // "-"),
+        ((.Certificate.List // [])[0].Status // "-"),
+        .CreatedOn
+      ] | @csv'
+}
+
+teo_acceleration_domains_cmd () {
+  if [[ $# -gt 0 && "$1" == zone-* ]]; then
+    local zone=$1
+    shift
+    if [[ $# -eq 0 ]]; then
+      teo_acceleration_domains_ls "$zone" | column -t -s $','
+    elif [[ "$1" == "--csv" ]]; then
+      teo_acceleration_domains_ls "$zone"
+    else
+      teo_acceleration_domains --ZoneId "$zone" "$@"
+    fi
+  else
+    teo_acceleration_domains "$@"
+  fi
+}
+
 case "$cmd" in
   describe-rules|DescribeRules)
     teo_describe_rules "$@"
+    ;;
+  acceleration-domains|acceleration_domains)
+    teo_acceleration_domains_cmd "$@"
     ;;
   zones)
    tccli teo DescribeZones --cli-unfold-argument --filter 'Zones[].[ZoneId,ZoneName,Status,ActiveStatus,AliasZoneName]'  --output text
    ;;
   help|-h|--help|"")
     echo "teo commands (Tencent Cloud EdgeOne / TEO):"
-    echo "  describe-rules ZONE_ID   DescribeRules (--ZoneId ZONE_ID; extra args forwarded to tccli)"
-    echo "  describe-rules --ZoneId ZONE_ID [...]   pass flags directly to tccli teo DescribeRules"
+    echo "  zones                              ゾーン一覧 (DescribeZones)"
+    echo "  acceleration-domains ZONE_ID       加速ドメイン一覧 (DescribeAccelerationDomains)"
+    echo "  acceleration-domains ZONE_ID --csv CSV 出力"
+    echo "  describe-rules ZONE_ID             DescribeRules (--ZoneId ZONE_ID; extra args forwarded)"
+    echo "  describe-rules --ZoneId ZONE_ID [...]  pass flags directly to tccli teo DescribeRules"
     echo
     echo "Examples:"
     echo "  tcclit teo zones"
+    echo "  tcclit teo acceleration-domains zone-3pvmfmcuhxxa"
     echo "  tcclit teo describe-rules zone-xxxxx"
     echo "  tcclit teo describe-rules zone-xxxxx --output json"
     ;;

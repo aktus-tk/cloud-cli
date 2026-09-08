@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+# ---------------------------------------------------------------------------
+# Tencent Cloud CDN — tccli cdn のラッパー
+#
+# 分類: 全サブコマンド Read-only (Describe 系のみ)。
+#   tcclit cdn ls              # CDN ドメイン一覧
+#   tcclit cdn config DOMAIN   # ドメイン設定 (HTTPS 証明書等)
+# ---------------------------------------------------------------------------
+
+cdn_ls () {
+  echo "Domain,Status,Area,Origin,ServerName,Cname,CreateTime,UpdateTime"
+  tccli cdn DescribeDomains --output json 2>/dev/null \
+    | jq -r '.Domains // [] | sort_by(.Domain) | .[] | [
+        .Domain,
+        .Status,
+        .Area,
+        ((.Origin.Origins // []) | join(";")),
+        (.Origin.ServerName // "-"),
+        .Cname,
+        .CreateTime,
+        .UpdateTime
+      ] | @csv'
+}
+
+cdn_config () {
+  local domain=$1
+  [[ -n "$domain" ]] || { echo "usage: tcclit cdn config DOMAIN" >&2; exit 1; }
+  tccli cdn DescribeDomainsConfig \
+    --Filters "[{\"Name\":\"domain\",\"Value\":[\"$domain\"]}]" \
+    --output json 2>/dev/null \
+    | jq -r --arg d "$domain" '
+      (.Domains // [])[] | select(.Domain == $d) |
+      . as $x |
+      ($x.Https // {}) as $h |
+      ($h.CertInfo // {}) as $c |
+      [
+        "Domain: \($x.Domain)",
+        "Status: \($x.Status // "-")",
+        "Cname: \($x.Cname // "-")",
+        "Area: \($x.Area // "-")",
+        "Origin: \((($x.Origin.Origins // []) | join(", ")) // "-")",
+        "ServerName: \($x.Origin.ServerName // "-")",
+        "HttpsSwitch: \($h.Switch // "off")",
+        "CertId: \($c.CertId // "-")",
+        "CertName: \($c.CertName // "-")",
+        "CertExpireTime: \($c.ExpireTime // "-")"
+      ] | .[]'
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      cdn_ls
+    else
+      cdn_ls | column -t -s $','
+    fi
+    ;;
+  config)
+    cdn_config "$1"
+    ;;
+  help|-h|--help|"")
+    echo "cdn commands (Tencent Cloud CDN / tccli cdn):"
+    echo "  ls                   CDN ドメイン一覧 (DescribeDomains, --csv 可)"
+    echo "  config DOMAIN        ドメイン設定 (DescribeDomainsConfig)"
+    echo
+    echo "Examples:"
+    echo "  tcclit cdn ls"
+    echo "  tcclit cdn config a2086.app.gree-pf.net"
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit cdn help" >&2
+    exit 1
+    ;;
+esac
