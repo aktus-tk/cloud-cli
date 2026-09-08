@@ -255,7 +255,102 @@ gcloudt clb proxy-certs --csv       # 同上（CSV）
 `certs` / `proxy-certs` の STATUS は証明書の有効期限 (`expireTime`) に基づき、
 30 日以内に期限切れのものを `EXPIRING`、期限切れ済みのものを `EXPIRED` と表示する。
 
-### Tencent Cloud CLI (`tcclit`)
+### Tencent Cloud CLI (`tcclit` / `tccli`)
+
+RHEMS の Tencent Cloud 環境では、顧客アカウントへのアクセスに **CAM ロールのスイッチロール（AssumeRole）** を使います。公式の `tccli` は `~/.tccli/<profile>.credential` に API キーを置く前提なので、そのままでは RHEMS の運用モデルと合いません。
+
+cloud-cli は次の 2 層で Tencent Cloud を扱います。
+
+| コマンド | 役割 |
+|----------|------|
+| `tcclit` | よく使う操作のサブコマンド（`cvm ls`, `cam me` など） |
+| `tccli` | 公式 `tccli` の薄いラッパー（任意の API をそのまま叩く） |
+
+どちらも **Tencent 公式 CLI の実体は変更せず**、必要なとき `tc-assume exec` に委譲して一時認証を取得します。
+
+#### なぜ `tccli` ラッパーが必要か
+
+RHEMS の TC プロジェクト（`cl-workspaces` の `projects/<name>/tc`）では、direnv で `TENCENTCLOUD_PROFILE=<project-name>` が設定されます。各プロジェクトは顧客アカウントの CAM ロール（例: `sw-rhems-aidis-aw`）へスイッチロールする想定です。
+
+公式 `tccli` だけを使うと、次の問題があります。
+
+1. **`~/.tccli/<profile>.credential` が必須になる** — プロファイルごとに API キーを手動管理・更新する必要がある
+2. **スイッチロールと相性が悪い** — `tc-assume` で取得した一時認証と、`--profile` による credential 参照が混在しやすい
+3. **別プロジェクトの認証が残る** — シェルに `TENCENTCLOUD_SECRET_ID` が残っていると、意図しないアカウントへ接続する恐れがある
+
+ラッパーは `TENCENTCLOUD_PROFILE` が `~/.tc-assume/config` に定義されている場合、**毎回そのプロファイルへ assume してから** 公式 `tccli` を実行します。`~/.tccli/*.credential` は不要です。
+
+#### 認証の流れ
+
+```
+direnv (TENCENTCLOUD_PROFILE=aidis-aw)
+    ↓
+tccli / tcclit ラッパー
+    ↓  tc_should_assume() が true
+tc-assume exec aidis-aw -- /path/to/real/tccli ...
+    ↓  TC_ASSUME_WRAPPED=1, 一時認証を環境変数にセット
+公式 tccli (Python) が API 呼び出し
+```
+
+判定条件（`_lib/assume.sh`）:
+
+- `TENCENTCLOUD_PROFILE` が設定されている
+- `~/.tc-assume/config` に `[profile <name>]` がある
+- `TC_ASSUME_WRAPPED` が未設定（再帰防止）
+
+`TENCENTCLOUD_SECRET_ID` の有無は見ません。期限切れや別プロファイルの認証が残っていても、上記を満たせば必ず assume します。
+
+#### PATH の扱い
+
+| 場所 | 使われる `tccli` |
+|------|------------------|
+| `cl-workspaces` の `projects/*/tc`（direnv 有効） | cloud-cli のラッパー（`tcclit` と同じ `bin/` を PATH 先頭に追加） |
+| それ以外 | `~/.local/bin/tccli` など公式 CLI 本体 |
+
+`~/bin` に `tccli` の symlink を置く必要はありません。TC プロジェクトでは `.envrc` が `readlink -f "$(command -v tcclit)"` のディレクトリを PATH に足します。
+
+#### `tc-assume` の設定例
+
+`~/.tc-assume/config` にプロジェクト名と CAM ロールを対応させます（`type = assume_role`）。
+
+```ini
+[profile rhems]
+type = saml
+uin = 200022570412
+saml_provider = RHEMS-Google-Workspace
+role_arn = qcs::cam::uin/200022570412:roleName/RHEMS-WORKER
+# ...
+
+[profile aidis-aw]
+type = assume_role
+source_profile = rhems
+role_arn = qcs::cam::uin/200026321892:roleName/sw-rhems-aidis-aw
+region = ap-tokyo
+```
+
+`cl-workspaces` で TC プロジェクトに入った状態なら、次のどちらも同じ認証経路になります。
+
+```bash
+tccli sts GetCallerIdentity --output json
+tcclit cam me
+```
+
+TC プロジェクト外で assume したい場合は、明示的にプロファイルを渡します。
+
+```bash
+tc-assume exec aidis-aw -- tccli sts GetCallerIdentity
+```
+
+#### CAM（認証・権限の確認）
+
+```bash
+tcclit cam me          # 現在の caller とロール/ポリシー
+tcclit cam account     # アカウントサマリ + AppId
+tcclit cam policy ls   # カスタムポリシー一覧
+tcclit cam user ls     # サブユーザー一覧
+```
+
+`cam me` はロール認証（`CAMRole`）のときロール情報と `ListAttachedRolePolicies`、ユーザー認証のときはユーザー向けポリシーを表示します。
 
 #### Cloud Virtual Machine (CVM)
 
@@ -333,8 +428,13 @@ cloud-cli/
 │       └── clb
 │
 └── tc-cli/           # Tencent Cloud CLI ヘルパー
-    ├── bin/tcclit    # メインエントリーポイント
+    ├── bin/
+    │   ├── tcclit    # サブコマンド用エントリーポイント
+    │   ├── tccli     # 公式 tccli ラッパー（tc-assume 連携）
+    │   ├── _lib/assume.sh
+    │   └── _shims/tccli
     └── commands/     # サブコマンド定義
+        ├── cam
         ├── cvm
         ├── vpc
         ├── teo
@@ -347,7 +447,7 @@ cloud-cli/
 
 セキュリティに関するベストプラクティスや脆弱性の報告方法については、[SECURITY.md](SECURITY.md) を参照してください。
 
-**重要**: このツールは認証情報を保存・管理しません。認証は各クラウドプロバイダーの CLI ツール（`aws`, `gcloud`, `tccli`）によって処理されます。
+**重要**: このツールは認証情報を保存・管理しません。認証は各クラウドプロバイダーの CLI ツール（`aws`, `gcloud`, `tccli`）および Tencent Cloud の場合は `tc-assume` によって処理されます。
 
 ## ライセンス
 
