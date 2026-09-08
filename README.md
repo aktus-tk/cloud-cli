@@ -257,7 +257,7 @@ gcloudt clb proxy-certs --csv       # 同上（CSV）
 
 ### Tencent Cloud CLI (`tcclit` / `tccli`)
 
-RHEMS の Tencent Cloud 環境では、顧客アカウントへのアクセスに **CAM ロールのスイッチロール（AssumeRole）** を使います。公式の `tccli` は `~/.tccli/<profile>.credential` に API キーを置く前提なので、そのままでは RHEMS の運用モデルと合いません。
+Tencent Cloud へのアクセスは **CAM ロールの AssumeRole のみ** で行います。`~/.tccli/<profile>.credential` に API キーを置く運用は想定していません。
 
 cloud-cli は次の 2 層で Tencent Cloud を扱います。
 
@@ -266,28 +266,26 @@ cloud-cli は次の 2 層で Tencent Cloud を扱います。
 | `tcclit` | よく使う操作のサブコマンド（`cvm ls`, `cam me` など） |
 | `tccli` | 公式 `tccli` の薄いラッパー（任意の API をそのまま叩く） |
 
-どちらも **Tencent 公式 CLI の実体は変更せず**、必要なとき `tc-assume exec` に委譲して一時認証を取得します。
+どちらも **Tencent 公式 CLI の実体は変更せず**、`tc-assume` 経由で一時認証を取得してから実行します。
 
-#### なぜ `tccli` ラッパーが必要か
+#### 構成の要点
 
-RHEMS の TC プロジェクト（`cl-workspaces` の `projects/<name>/tc`）では、direnv で `TENCENTCLOUD_PROFILE=<project-name>` が設定されます。各プロジェクトは顧客アカウントの CAM ロール（例: `sw-rhems-aidis-aw`）へスイッチロールする想定です。
+1. **認証は AssumeRole だけ** — ベースプロファイル（SAML 等）から各アカウントの CAM ロールへチェーンする
+2. **credential ファイルは使わない** — `~/.tccli/*.credential` は不要。プロファイル定義は `~/.tc-assume/config` に集約する
+3. **プロファイル名でアカウントを切り替える** — 作業ディレクトリで `TENCENTCLOUD_PROFILE=<name>` を設定し、対応するロールへ assume する
 
-公式 `tccli` だけを使うと、次の問題があります。
+公式 `tccli` だけを使うと、`--profile` が `~/.tccli/<profile>.credential` を参照する前提になり、AssumeRole 運用と混在します。またシェルに残った `TENCENTCLOUD_SECRET_ID` を再利用すると、別アカウントへ接続する恐れがあります。
 
-1. **`~/.tccli/<profile>.credential` が必須になる** — プロファイルごとに API キーを手動管理・更新する必要がある
-2. **スイッチロールと相性が悪い** — `tc-assume` で取得した一時認証と、`--profile` による credential 参照が混在しやすい
-3. **別プロジェクトの認証が残る** — シェルに `TENCENTCLOUD_SECRET_ID` が残っていると、意図しないアカウントへ接続する恐れがある
-
-ラッパーは `TENCENTCLOUD_PROFILE` が `~/.tc-assume/config` に定義されている場合、**毎回そのプロファイルへ assume してから** 公式 `tccli` を実行します。`~/.tccli/*.credential` は不要です。
+ラッパーは `TENCENTCLOUD_PROFILE` が `~/.tc-assume/config` にある場合、**毎回そのプロファイルへ assume してから** 公式 `tccli` を実行します。
 
 #### 認証の流れ
 
 ```
-direnv (TENCENTCLOUD_PROFILE=aidis-aw)
+TENCENTCLOUD_PROFILE=project-a
     ↓
 tccli / tcclit ラッパー
     ↓  tc_should_assume() が true
-tc-assume exec aidis-aw -- /path/to/real/tccli ...
+tc-assume exec project-a -- /path/to/real/tccli ...
     ↓  TC_ASSUME_WRAPPED=1, 一時認証を環境変数にセット
 公式 tccli (Python) が API 呼び出し
 ```
@@ -304,41 +302,51 @@ tc-assume exec aidis-aw -- /path/to/real/tccli ...
 
 | 場所 | 使われる `tccli` |
 |------|------------------|
-| `cl-workspaces` の `projects/*/tc`（direnv 有効） | cloud-cli のラッパー（`tcclit` と同じ `bin/` を PATH 先頭に追加） |
+| `TENCENTCLOUD_PROFILE` を設定した作業ディレクトリ（direnv 等） | cloud-cli のラッパー（`tcclit` と同じ `bin/` を PATH 先頭に追加） |
 | それ以外 | `~/.local/bin/tccli` など公式 CLI 本体 |
 
-`~/bin` に `tccli` の symlink を置く必要はありません。TC プロジェクトでは `.envrc` が `readlink -f "$(command -v tcclit)"` のディレクトリを PATH に足します。
+`~/bin` に `tccli` の symlink を置く必要はありません。作業ディレクトリの `.envrc` などで `readlink -f "$(command -v tcclit)"` のディレクトリを PATH に足すと、生の `tccli` コマンドもラッパー経由になります。
 
 #### `tc-assume` の設定例
 
-`~/.tc-assume/config` にプロジェクト名と CAM ロールを対応させます（`type = assume_role`）。
+`~/.tc-assume/config` にベース認証と、各アカウント向けの `assume_role` を定義します。
 
 ```ini
-[profile rhems]
+# ベース認証（SAML / 既存の長期認証など）
+[profile base]
 type = saml
-uin = 200022570412
-saml_provider = RHEMS-Google-Workspace
-role_arn = qcs::cam::uin/200022570412:roleName/RHEMS-WORKER
-# ...
+uin = 200000000001
+saml_provider = example-idp
+role_arn = qcs::cam::uin/200000000001:roleName/operator
+region = ap-tokyo
 
-[profile aidis-aw]
+# 顧客アカウント A
+[profile project-a]
 type = assume_role
-source_profile = rhems
-role_arn = qcs::cam::uin/200026321892:roleName/sw-rhems-aidis-aw
+source_profile = base
+role_arn = qcs::cam::uin/200000000002:roleName/switch-role-project-a
+region = ap-tokyo
+
+# 顧客アカウント B
+[profile project-b]
+type = assume_role
+source_profile = base
+role_arn = qcs::cam::uin/200000000003:roleName/switch-role-project-b
 region = ap-tokyo
 ```
 
-`cl-workspaces` で TC プロジェクトに入った状態なら、次のどちらも同じ認証経路になります。
+`TENCENTCLOUD_PROFILE` を設定した状態では、次のどちらも同じ認証経路になります。
 
 ```bash
+export TENCENTCLOUD_PROFILE=project-a
 tccli sts GetCallerIdentity --output json
 tcclit cam me
 ```
 
-TC プロジェクト外で assume したい場合は、明示的にプロファイルを渡します。
+プロファイル未設定のシェルから実行する場合は、明示的に渡します。
 
 ```bash
-tc-assume exec aidis-aw -- tccli sts GetCallerIdentity
+tc-assume exec project-a -- tccli sts GetCallerIdentity
 ```
 
 #### CAM（認証・権限の確認）
@@ -350,7 +358,7 @@ tcclit cam policy ls   # カスタムポリシー一覧
 tcclit cam user ls     # サブユーザー一覧
 ```
 
-`cam me` はロール認証（`CAMRole`）のときロール情報と `ListAttachedRolePolicies`、ユーザー認証のときはユーザー向けポリシーを表示します。
+`cam me` はロール認証（`CAMRole`）のときロール情報と `ListAttachedRolePolicies` を表示します。
 
 #### Cloud Virtual Machine (CVM)
 
