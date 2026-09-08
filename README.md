@@ -337,7 +337,10 @@ cloud-cli/
     └── commands/     # サブコマンド定義
         ├── cvm
         ├── vpc
-        └── teo
+        ├── teo
+        ├── cdn
+        ├── ssl
+        └── lb
 ```
 
 ## セキュリティ

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+_shim_dir="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../_lib/assume.sh
+source "${_shim_dir}/../_lib/assume.sh"
 real="${CLOUD_CLI_REAL_TCCLI:?CLOUD_CLI_REAL_TCCLI not set}"
 args=("$@")
-# direnv 等で TENCENTCLOUD_PROFILE が設定されている場合は --profile を自動注入する
-if [[ -n "${TENCENTCLOUD_PROFILE:-}" ]]; then
+# tc-assume 経由 (TC_ASSUME_WRAPPED=1) では環境変数の一時認証を使う。
+# それ以外で tc-assume 未管理プロファイルのみ --profile を注入（~/.tccli/*.credential 用）。
+if [[ -z "${TC_ASSUME_WRAPPED:-}" && -n "${TENCENTCLOUD_PROFILE:-}" ]] \
+  && ! tc_assume_has_profile "${TENCENTCLOUD_PROFILE}"; then
   args=(--profile "$TENCENTCLOUD_PROFILE" "${args[@]}")
 fi
 if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then

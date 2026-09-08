@@ -34,7 +34,9 @@ fi
 
 # tccli を常に shim 経由にする (--profile 自動注入 / --debug 時のコマンド表示)。
 # shim が自分自身を再解決しないよう、先に実体を確定してから PATH へ追加する。
-if _real="$(command -v tccli)"; then
+# shellcheck source=_lib/assume.sh
+source "${_bin}/_lib/assume.sh"
+if _real="$(tc_real_tccli)"; then
   export CLOUD_CLI_REAL_TCCLI="$_real"
   export PATH="${_bin}/_shims:${PATH}"
 fi
@@ -44,6 +46,15 @@ COMMAND="$COMMANDS/$CMD"
 if [[ ! -x "$COMMAND" ]]; then
   echo "unknown command: $CMD"
   exit 1
+fi
+
+# tc-assume にプロファイルがある場合は必ず assume（TC_ASSUME_WRAPPED で再帰防止）。
+if tc_should_assume; then
+  if [[ $# -eq 0 ]]; then
+    tc_assume_exec "$COMMAND" help
+  else
+    tc_assume_exec "$COMMAND" "$@"
+  fi
 fi
 
 # 引数なしなら help

@@ -29,7 +29,7 @@ EOF
 }
 
 cam_profile() {
-  printf '%s' "${TENCENT_PROFILE:-${TENCENTCLOUD_PROFILE:-default}}"
+  printf '%s' "${TENCENTCLOUD_PROFILE:-default}"
 }
 
 cam_identity() {

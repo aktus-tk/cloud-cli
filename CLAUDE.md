@@ -42,7 +42,10 @@ cloud-cli/
     └── commands/
         ├── cvm       # Cloud Virtual Machine
         ├── vpc       # Virtual Private Cloud
-        └── teo       # Tencent EdgeOne
+        ├── teo       # Tencent EdgeOne
+        ├── cdn       # Content Delivery Network
+        ├── ssl       # SSL Certificate Service
+        └── lb        # Load Balancer (CLB)
 ```
 
 ## 動作メカニズム
@@ -194,7 +197,18 @@ tcclit cvm ls           # CVM インスタンス一覧
 tcclit cvm types        # 使用可能なインスタンスタイプ一覧
 tcclit cvm start NAME   # インスタンスを起動（直接実行）
 tcclit cvm stop NAME    # 停止コマンドを出力（print only）
-tcclit vpc ...          # VPC 操作
+tcclit vpc sg           # セキュリティグループ一覧
+tcclit teo zones                              # EdgeOne ゾーン一覧
+tcclit teo acceleration-domains ZONE_ID       # 加速ドメイン一覧
+tcclit teo describe-rules ZONE_ID             # ルールエンジン
+tcclit cdn ls                    # CDN ドメイン一覧
+tcclit cdn config DOMAIN         # ドメイン設定 (HTTPS 証明書等)
+tcclit ssl search QUERY          # 証明書検索 (ドメイン名・ID)
+tcclit ssl show CERT_ID          # 証明書詳細
+tcclit lb ls                     # ロードバランサー一覧
+tcclit lb listeners NAME|ID      # リスナー一覧
+tcclit lb rules NAME|ID          # SNI ルール一覧 (ドメイン・証明書 ID)
+tcclit lb targets NAME|ID        # バックエンド一覧
 ```
 
 ## 設置方法
@@ -244,7 +258,6 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **access-key show NAME**: User のアクセスキー一覧（AccessKeyId, Status, CreateDate）
 - **access-key create NAME**: User 用のアクセスキー作成（AccessKeyId, SecretAccessKey 表示＋レコメンデーション）
 
-<<<<<<< HEAD
 ### AWS Secrets Manager (`aws-cli/commands/secrets`)
 
 - **ls**: シークレット一覧（テーブル/CSV）
@@ -258,13 +271,12 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **delete NAME**: シークレットを削除（30日間の復旧期間）
 - **delete NAME --force**: シークレットを即座に削除
 - **restore NAME**: 削除したシークレットを復元
-=======
+
 ### AWS EKS (`aws-cli/commands/eks`)
 
 - **list-clusters**: EKS クラスター一覧（Name, Version, Status, Endpoint, RoleArn, Created）テーブル/CSV
 - **update-kubeconfig NAME**: 指定クラスターの kubeconfig をローカルに更新
 - **update-kubeconfig NAME --dry-run**: kubeconfig を標準出力に出力（kubeconfig の確認・パイプ処理用）
->>>>>>> 34c33ef (chore: update .gitignore and CLAUDE.md)
 
 ### GCP GCE (`g-cli/commands/gce`)
 
@@ -332,6 +344,30 @@ ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
 - **types**: 使用可能なインスタンスタイプ一覧（DescribeInstanceTypeConfigs、テーブル/CSV）
 - **start/stop**: インスタンス制御（tccli API 呼び出し）
 - **Helper**: `cvm_get_id()` でインスタンス名またはタグから ID を検索
+
+### Tencent Cloud CDN (`tc-cli/commands/cdn`)
+
+- **ls**: CDN ドメイン一覧（DescribeDomains、テーブル/CSV）
+- **config DOMAIN**: ドメイン設定詳細（DescribeDomainsConfig、HTTPS 証明書情報含む）
+
+### Tencent Cloud SSL (`tc-cli/commands/ssl`)
+
+- **search QUERY**: 証明書検索（DescribeCertificates --SearchKey、テーブル/CSV）
+- **show CERT_ID**: 証明書詳細（有効期限、紐付けリソース等）
+
+### Tencent Cloud Load Balancer (`tc-cli/commands/lb`)
+
+- **ls**: ロードバランサー一覧（DescribeLoadBalancers、テーブル/CSV）
+- **listeners NAME|ID**: リスナー一覧
+- **rules NAME|ID**: SNI ルール一覧（ドメイン・証明書 ID）
+- **targets NAME|ID**: バックエンド一覧（リスナー/ルール単位）
+- **Helper**: `lb_get_id()` で LB 名から ID を検索
+
+### Tencent Cloud EdgeOne (`tc-cli/commands/teo`)
+
+- **zones**: ゾーン一覧（DescribeZones）
+- **acceleration-domains ZONE_ID**: 加速ドメイン一覧（証明書情報含む、テーブル/CSV）
+- **describe-rules ZONE_ID**: ルールエンジン（DescribeRules）
 
 ## CLI 依存関係
 

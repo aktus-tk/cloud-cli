@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_bin="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=_lib/assume.sh
+source "${_bin}/_lib/assume.sh"
+
+if tc_should_assume; then
+  tc_assume_exec "$(tc_real_tccli)" "$@"
+fi
+
+export CLOUD_CLI_REAL_TCCLI="$(tc_real_tccli)"
+export PATH="${_bin}/_shims:${PATH}"
+exec "${_bin}/_shims/tccli" "$@"
