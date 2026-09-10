@@ -2,6 +2,13 @@
 
 AWS、GCP、Tencent Cloud の CLI ラッパーツール集。各CLIの共通オペレーション（インスタンス一覧、起動、停止など）を統一インターフェースで提供。
 
+## Skill 参照
+
+以下の操作は専用 Skill を参照すること:
+
+- **AWS 請求 (billing)** の確認・分析 → `aws-cli/skills/billing/SKILL.md`  
+  Cost Explorer のメトリクス選択（NetUnblendedCost / BlendedCost）、API の制約、請求書とのズレの原因などを記載。
+
 ## ディレクトリ構成
 
 ```
@@ -9,19 +16,22 @@ cloud-cli/
 ├── aws-cli/          # AWS CLI ヘルパー
 │   ├── bin/
 │   │   └── awst      # メインエントリーポイント
-│   └── commands/     # サブコマンド定義
-│       ├── ec2       # EC2 インスタンス操作
-│       ├── eks       # Elastic Kubernetes Service
-│       ├── r53       # Route 53 DNS
-│       ├── alb       # Application Load Balancer
-│       ├── cf        # CloudFront
-│       ├── iam       # Identity and Access Management
-│       ├── secrets   # Secrets Manager
-│       ├── lightsail # Lightsail
-│       ├── waf       # Web Application Firewall
-│       ├── sg        # Security Groups
-│       ├── acm       # Certificate Manager
-│       └── search    # その他の検索
+│   ├── commands/     # サブコマンド定義
+│   │   ├── ec2       # EC2 インスタンス操作
+│   │   ├── eks       # Elastic Kubernetes Service
+│   │   ├── billing   # 請求 (Cost Explorer)
+│   │   ├── r53       # Route 53 DNS
+│   │   ├── alb       # Application Load Balancer
+│   │   ├── cf        # CloudFront
+│   │   ├── iam       # Identity and Access Management
+│   │   ├── secrets   # Secrets Manager
+│   │   ├── lightsail # Lightsail
+│   │   ├── waf       # Web Application Firewall
+│   │   ├── sg        # Security Groups
+│   │   ├── acm       # Certificate Manager
+│   │   └── search    # その他の検索
+│   └── skills/       # Skill 定義
+│       └── billing/  # 請求 Skill → SKILL.md
 │
 ├── g-cli/           # GCP CLI ヘルパー
 │   ├── bin/

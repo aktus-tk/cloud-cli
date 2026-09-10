@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -e
+
+cmd="${1:-ls}"
+shift || true
+
+billing_monthly() {
+  local year="${1:-}"
+  local month="${2:-}"
+  local fmt="table"
+  local service=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv)
+        fmt="csv"
+        shift
+        ;;
+      --json)
+        fmt="json"
+        shift
+        ;;
+      --service)
+        service="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$year" || -z "$month" ]]; then
+    echo "usage: awst billing monthly <year> <month> [--csv|--json] [--service SERVICE]" >&2
+    exit 1
+  fi
+
+  local start_date="${year}-$(printf '%02d' "$month")-01"
+
+  # AWS Cost Explorer: End is exclusive. Use start of next month.
+  local end_year="$year"
+  local end_month="$((month + 1))"
+  if [[ "$end_month" -gt 12 ]]; then
+    end_month=1
+    end_year="$((year + 1))"
+  fi
+  local end_date="${end_year}-$(printf '%02d' "$end_month")-01"
+
+  [[ -n "$service" ]] && local filter=(--filter "Dimensions={Key=SERVICE,Values=$service}") || local filter=()
+
+  # Fetch service breakdown with NetUnblendedCost (pre-tax, no RI/SP discounts applied to group sum)
+  local results
+  results="$(aws ce get-cost-and-usage \
+    --time-period "Start=${start_date},End=${end_date}" \
+    --granularity MONTHLY \
+    --metrics "NetUnblendedCost" \
+    --group-by Type=DIMENSION,Key=SERVICE \
+    "${filter[@]}" \
+    --output json)"
+
+  # Fetch grand total with BlendedCost (no grouping, matches invoice grand total)
+  local invoice_total
+  invoice_total="$(aws ce get-cost-and-usage \
+    --time-period "Start=${start_date},End=${end_date}" \
+    --granularity MONTHLY \
+    --metrics "BlendedCost" \
+    --output json | jq -r '.ResultsByTime[0].Total.BlendedCost.Amount')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson services "$results" --arg total "$invoice_total" '
+      {
+        invoice_total: ($total | tonumber),
+        currency: "USD",
+        services: [$services.ResultsByTime[0].Groups[] | {
+          service: .Keys[0],
+          amount: (.Metrics.NetUnblendedCost.Amount | tonumber)
+        }]
+        | sort_by(-.amount)
+      }
+    '
+    return 0
+  fi
+
+  if [[ "$fmt" == "csv" ]]; then
+    echo "Service,Amount(USD)"
+    echo "$results" | jq -r '
+      .ResultsByTime[0].Groups
+      | sort_by(-(.Metrics.NetUnblendedCost.Amount | tonumber))
+      | .[]
+      | [.Keys[0], .Metrics.NetUnblendedCost.Amount]
+      | @csv
+    ' | tr -d '"'
+    echo ""
+    echo "Invoice Total (BlendedCost),$invoice_total"
+    return 0
+  fi
+
+  # Table format (default)
+  echo "$results" | jq -r '
+    .ResultsByTime[0].Groups
+    | sort_by(-(.Metrics.NetUnblendedCost.Amount | tonumber))
+    | .[]
+    | "\(.Keys[0]),\(.Metrics.NetUnblendedCost.Amount),\(.Metrics.NetUnblendedCost.Unit)"
+  ' | column -s, -t --table-columns "Service,Amount,Unit" -N "Service,Amount,Unit"
+
+  local subtotal tax
+  subtotal="$(echo "$results" | jq -r '
+    [.ResultsByTime[0].Groups[] | select(.Keys[0] != "Tax") | .Metrics.NetUnblendedCost.Amount | tonumber] | add
+  ')"
+  tax="$(echo "$results" | jq -r '
+    [.ResultsByTime[0].Groups[] | select(.Keys[0] == "Tax") | .Metrics.NetUnblendedCost.Amount | tonumber] | add // 0
+  ')"
+
+  printf '\n'
+  printf '%-55s %s\n' "Subtotal (pre-tax):" "$(printf "%12.2f" "$subtotal") USD"
+  printf '%-55s %s\n' "Tax:" "$(printf "%12.2f" "$tax") USD"
+  printf '%-55s %s\n' "Invoice Total (BlendedCost):" "$(printf "%12.2f" "$invoice_total") USD"
+}
+
+billing_daily() {
+  local year="${1:-}"
+  local month="${2:-}"
+  local fmt="table"
+
+  if [[ -z "$year" || -z "$month" ]]; then
+    echo "usage: awst billing daily <year> <month> [--csv|--json]" >&2
+    exit 1
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  local start_date="${year}-$(printf '%02d' "$month")-01"
+
+  local end_year="$year"
+  local end_month="$((month + 1))"
+  if [[ "$end_month" -gt 12 ]]; then
+    end_month=1
+    end_year="$((year + 1))"
+  fi
+  local end_date="${end_year}-$(printf '%02d' "$end_month")-01"
+
+  if [[ "$fmt" == "csv" ]]; then
+    echo "Date,Amount(USD)"
+    aws ce get-cost-and-usage \
+      --time-period "Start=${start_date},End=${end_date}" \
+      --granularity DAILY \
+      --metrics "NetUnblendedCost" \
+      --group-by Type=DIMENSION,Key=SERVICE \
+      --output json | jq -r '
+        (["Date", "Amount(USD)"]) as $header |
+        [.ResultsByTime[] | {
+          date: .TimePeriod.Start,
+          amount: ([.Groups[].Metrics.NetUnblendedCost.Amount | tonumber] | add)
+        }]
+        | sort_by(.date)
+        | map([.date, (.amount | tostring)])
+        | [$header] + . | .[] | @csv
+      ' | tr -d '"'
+    return 0
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    aws ce get-cost-and-usage \
+      --time-period "Start=${start_date},End=${end_date}" \
+      --granularity DAILY \
+      --metrics "NetUnblendedCost" \
+      --group-by Type=DIMENSION,Key=SERVICE \
+      --output json | jq '
+        [.ResultsByTime[]
+          | {
+              date: .TimePeriod.Start,
+              amount: ([.Groups[].Metrics.NetUnblendedCost.Amount | tonumber] | add),
+              services: [.Groups[] | {service: .Keys[0], amount: .Metrics.NetUnblendedCost.Amount}]
+            }
+        ]
+        | sort_by(.date)
+      '
+    return 0
+  fi
+
+  # Table format (default)
+  echo "Date,Amount(USD)"
+  aws ce get-cost-and-usage \
+    --time-period "Start=${start_date},End=${end_date}" \
+    --granularity DAILY \
+    --metrics "NetUnblendedCost" \
+    --group-by Type=DIMENSION,Key=SERVICE \
+    --output json | jq -r '
+      [.ResultsByTime[] | {
+        date: .TimePeriod.Start,
+        amount: ([.Groups[].Metrics.NetUnblendedCost.Amount | tonumber] | add | tostring)
+      }]
+      | sort_by(.date)
+      | .[]
+      | "\(.date),\(.amount)"
+    ' | column -s, -t
+
+  echo ""
+  printf 'Total (pre-tax): %.2f USD\n' "$(aws ce get-cost-and-usage \
+    --time-period "Start=${start_date},End=${end_date}" \
+    --granularity MONTHLY \
+    --metrics "NetUnblendedCost" \
+    --group-by Type=DIMENSION,Key=SERVICE \
+    --output json | jq -r '
+      [.ResultsByTime[0].Groups[] | select(.Keys[0] != "Tax") | .Metrics.NetUnblendedCost.Amount | tonumber] | add
+    ')"
+}
+
+
+case "$cmd" in
+  ls|monthly)
+    billing_monthly "$@"
+    ;;
+  daily)
+    billing_daily "$@"
+    ;;
+  *)
+    echo "billing commands:" >&2
+    echo "  monthly <year> <month> [--csv|--json] [--service SERVICE]  月間請求をサービス別に表示" >&2
+    echo "  daily   <year> <month> [--csv|--json]                      日別請求を表示" >&2
+    echo "" >&2
+    echo "  Amount = NetUnblendedCost（税前のオンデマンド実質価格）" >&2
+    echo "  Invoice Total = BlendedCost（請求書の総計に一致、グループ化なしの全体値）" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  awst billing monthly 2026 7" >&2
+    echo "  awst billing daily 2026 7" >&2
+    echo "  awst billing monthly 2026 7 --csv" >&2
+    echo "  awst billing monthly 2026 7 --service 'Amazon EC2'" >&2
+    ;;
+esac
