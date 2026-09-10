@@ -251,7 +251,7 @@ policy_show() {
 
 user_ls_csv() {
   echo "Uin,Name,Uid,Remark,ConsoleLogin,PhoneNum,Email"
-  tccli cam ListUsers --Rp 100 --Page 1 --output json | jq -r '
+  tccli cam ListUsers --output json | jq -r '
     (.Data // [])[]
     | [
         (.Uin // ""),
