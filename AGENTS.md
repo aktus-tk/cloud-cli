@@ -1,395 +1,168 @@
-# Cloud CLI Helper - プロジェクト構成
+# cloud-cli — AI Agent 向け規則
 
-AWS、GCP、Tencent Cloud の CLI ラッパーツール集。各CLIの共通オペレーション（インスタンス一覧、起動、停止など）を統一インターフェースで提供。
+人間向けの利用案内・コマンド一覧の正本は [README.md](README.md) です。本ファイルは Agent が守るべきルールと、リポジトリを変更する際の実装規則を定義します。
 
-## Skill 参照
+## 責務と対象外
 
-以下の操作は専用 Skill を参照すること:
+**cloud-cli が行うこと**
 
-- **AWS 請求 (billing)** の確認・分析 → `aws-cli/skills/billing/SKILL.md`  
-  Cost Explorer のメトリクス選択（NetUnblendedCost / BlendedCost）、API の制約、請求書とのズレの原因などを記載。
+- 調査に必要な情報を、短く安定したコマンドで取得する
+- 公式 CLI の生出力を抽出・正規化し、必要最小限に整形して返す
+- 実運用で再利用価値の高い操作だけをコマンドとして追加する
 
-## ディレクトリ構成
+**cloud-cli が行わないこと**
 
-```
-cloud-cli/
-├── aws-cli/          # AWS CLI ヘルパー
-│   ├── bin/
-│   │   └── awst      # メインエントリーポイント
-│   ├── commands/     # サブコマンド定義
-│   │   ├── ec2       # EC2 インスタンス操作
-│   │   ├── eks       # Elastic Kubernetes Service
-│   │   ├── billing   # 請求 (Cost Explorer)
-│   │   ├── r53       # Route 53 DNS
-│   │   ├── alb       # Application Load Balancer
-│   │   ├── cf        # CloudFront
-│   │   ├── iam       # Identity and Access Management
-│   │   ├── secrets   # Secrets Manager
-│   │   ├── lightsail # Lightsail
-│   │   ├── waf       # Web Application Firewall
-│   │   ├── sg        # Security Groups
-│   │   ├── acm       # Certificate Manager
-│   │   └── search    # その他の検索
-│   └── skills/       # Skill 定義
-│       └── billing/  # 請求 Skill → SKILL.md
-│
-├── g-cli/           # GCP CLI ヘルパー
-│   ├── bin/
-│   │   └── gcloudt   # メインエントリーポイント
-│   └── commands/
-│       ├── gce       # Compute Engine インスタンス操作
-│       ├── firewall  # VPC Firewall ルール表示
-│       ├── sa        # Service Account 表示
-│       ├── gcs       # Cloud Storage バケット表示
-│       ├── clb       # Cloud Load Balancer
-│       ├── project   # GCP プロジェクト情報
-│       ├── network   # VPC / Subnet / Route / Router / NAT
-│       └── dns       # Cloud DNS
-│
-└── tc-cli/          # Tencent Cloud CLI ヘルパー
-    ├── bin/
-    │   └── tcclit    # メインエントリーポイント
-    └── commands/
-        ├── cvm       # Cloud Virtual Machine
-        ├── vpc       # Virtual Private Cloud
-        ├── teo       # Tencent EdgeOne
-        ├── cdn       # Content Delivery Network
-        ├── ssl       # SSL Certificate Service
-        └── lb        # Load Balancer (CLB)
+- 公式 CLI の全機能の再実装
+- AWS / GCP / Tencent Cloud の差異を完全に抽象化する統合 API
+- 調査手順全体や複雑なワークフローの実装（それは skill / runbook の責務）
+- 一度きりの処理、顧客・プロジェクト固有の処理の取り込み
+
+## 責務境界
+
+```text
+skill
+  何を、どの順序で調査するかを定義する
+
+cloud-cli
+  調査に必要な情報を短く安定したコマンドで取得し、
+  必要最小限に整形して出力する
+
+公式 CLI（aws / gcloud / tccli）
+  クラウド API を直接操作する
 ```
 
-## 動作メカニズム
+調査手順全体を cloud-cli に実装しない。取り込むのは、複数の skill や調査から再利用できる CLI 操作・情報取得処理のみ。
+
+## コマンド追加の判断基準
+
+次の条件を**複数**満たす操作を追加対象とする。
+
+- 実運用で複数回利用している
+- 公式 CLI のオプションが長い、複雑、または覚えにくい
+- 公式 CLI の生出力が大きすぎる
+- 複数のプロジェクトや調査で共通利用できる
+- skill から安定して呼び出したい
+- 入力または出力トークンを明確に削減できる
+- 人間が日常的に使用する
+
+追加しない例: 一度しか使わない処理、顧客・プロジェクト固有の処理、複数ステップの複雑なワークフロー（公式 CLI または各プロジェクトの skill / runbook で扱う）。
+
+## コマンド設計・命名規則
+
+- エントリポイント: `aws-cli/bin/awst`、`g-cli/bin/gcloudt`、`tc-cli/bin/tcclit`
+- サブコマンド: 各 `*/commands/<name>` に実行可能 Bash スクリプト（第1引数で `case` 分岐）
+- 一覧は `ls`、詳細は `show` / `get` / `describe` など既存サブコマンドの慣習に合わせる
+- 表形式出力に `--csv` を用意する（既存コマンドと同様）
+- JSON が必要な場合は `--json` を既存パターンに合わせて付与
+- AWS サービス名と CLI 名が異なる場合は既存例に従う（例: EventBridge → `aws events`、ファイル名 `eventbridge`）
+- 新規 `awst` サブコマンド追加時は [.cursor/skills/awst-add-command/SKILL.md](.cursor/skills/awst-add-command/SKILL.md) を参照
+
+## 出力の削減・整形・安定性
+
+- Agent がパースしやすい、列やフィールドが安定した出力を優先する
+- 不要な ARN・メタデータ・ネスト JSON は落とすか要約する
+- 人間向け表は `column` 等で整形（既存実装に合わせる）
+- 同じ操作で毎回異なる形式を返さない（破壊的な出力形式変更は避ける）
+- シークレット値は `get` 等、明示的に必要なサブコマンドでのみ出力する。一覧・詳細では値を含めない
+
+## 実行ポリシー
+
+`awst` / `gcloudt` / `tcclit` 共通。操作は次の 3 つに分類する。**`create` / `get` / `delete` などの名前だけで判定しない。**
+
+### Read-only 操作
+
+ネイティブ CLI を直接実行し、結果を整形して表示する。例: `ls`, `show`, `get`, `describe`, `list`, `types`。
+
+### 通常の変更操作
+
+ネイティブ CLI を直接実行する。「変更操作だから」という理由だけで dry-run や実行予定コマンド表示にしない。例: `create`, `update`, `restore`, `start`。
+
+### 破壊的・高リスクな操作
+
+cloud-cli からネイティブ CLI を**実行しない**。実行予定のネイティブ CLI コマンドを標準出力に出して終了する（**実行予定コマンドのみ表示（実行しない）**）。
+
+これは「確認プロンプトのあと cloud-cli が実行する」ことを意味しない。ユーザーが出力を確認し、必要なら別途公式 CLI を実行する。
+
+危険度の判断に使う観点:
+
+- データ損失の可能性
+- 不可逆性（`--force` 等）
+- 秘密情報の露出リスク
+- 復旧可能性（復旧可能な delete と即時削除は区別する）
+- 影響範囲
+- 既存リソースや設定への重大な影響
+
+例: `delete`, `delete --force`, `terminate`, インスタンス `stop`（運用ポリシーで高リスクとみなすもの）。
+
+### `--debug`
+
+操作分類に関係なく、ネイティブ CLI を実行しない。実行予定コマンドのみを出力する（dry-run / command preview）。
+
+## 認証・秘密情報
+
+- cloud-cli は認証情報を保存・管理しない（[SECURITY.md](SECURITY.md)）
+- 認証は `aws` / `gcloud` / `tccli` および Tencent の `tc-assume` 連携に委ねる
+- コミット・ログ・help 文に秘密情報やアカウント固有の値を埋め込まない
+- `secrets get` 等の出力を Agent ログに不必要に残さないよう、実装・利用ともに最小限にする
+
+## 実装構造（変更時の参照）
 
 ### メインスクリプト (`bin/*`)
 
-1. **シンボリックリンク対応**: `$0` がシンボリックリンクかどうかを判定
-2. **コマンド解決**: `bin` ディレクトリから相対パスで `../commands/` を参照
-3. **サブコマンド実行**: 第1引数をサブコマンド名として`commands/`以下の実行可能ファイルを実行
-4. **デフォルト help**: 引数がない場合は自動的にサブコマンドの `help` を実行
+1. シンボリックリンク対応（`$0` の実パス解決）
+2. `bin` から `../commands/` を参照
+3. 第1引数をサブコマンド名として `commands/` 以下を実行
+4. 引数なしのときは該当サブコマンドの `help` を表示
 
 ```bash
-# 例：awst ec2 ls
-# 1. awst が呼ばれる
-# 2. $1 = "ec2", shift
-# 3. aws-cli/commands/ec2 を実行
-# 4. ec2 の $1 = "ls", その他の引数を渡す
+# awst ec2 ls → aws-cli/commands/ec2 を実行し、ec2 側で ls を処理
 ```
 
 ### サブコマンド (`commands/*`)
 
-- **Bash スクリプト**: `#!/usr/bin/env bash` で実行可能
-- **Case 文**: 最初の引数で処理を分岐
-- **関数定義**: 共通処理を関数化（例：`ec2_get_id`, `cvm_get_id`）
-- **Help**: デフォルトケース（`*`）で使用可能なサブコマンド一覧を表示
-
-#### サブコマンド構造テンプレート
+- `#!/usr/bin/env bash`、`set -e`（既存ファイルは `set -eo pipefail` も可）
+- `cmd=$1` → `shift || true` → `case`
+- 共通処理は関数化（例: `ec2_get_id`, `cvm_get_id`, `lb_get_id`）
+- 未知の第1引数は help を表示
 
 ```bash
 #!/usr/bin/env bash
 set -e
 
 cmd=$1
-shift [|| true]
-
-# ヘルパー関数
-function_name() {
-  # 実装
-}
+shift || true
 
 case "$cmd" in
-  subcommand)
-    # 処理
-    ;;
+  ls) … ;;
   *)
-    echo "コマンド一覧..."
+    echo "Usage: …"
     ;;
 esac
 ```
 
-## コマンドの使用例
+### ディレクトリ（ファイル特定用）
 
-### AWS CLI (`awst`)
-
-```bash
-awst ec2 ls              # インスタンス一覧を表示
-awst ec2 ls --csv       # CSV 形式で出力
-awst ec2 start NAME     # インスタンスを起動（直接実行）
-awst ec2 stop NAME      # 停止コマンドを出力（print only）
-
-awst alb ls              # ALB 一覧を表示（Security Groups 含む）
-awst alb listener NAME   # ALB のリスナー情報を表示
-awst alb tg NAME         # ALB のターゲットグループを表示
-awst alb health TG_NAME  # ターゲットグループのヘルスチェック結果
-
-awst iam policy ls       # customer managed policies 一覧
-awst iam policy show NAME  # policy 詳細（バージョン、ドキュメント）
-awst iam role ls         # role 一覧
-awst iam role show NAME  # role 詳細（信頼ポリシー、アタッチ済みポリシー）
-awst iam role policies NAME  # role にアタッチされたポリシー一覧
-awst iam user ls         # user 一覧
-awst iam user show NAME  # user 詳細（アタッチ済みポリシー）
-awst iam user policies NAME  # user にアタッチされたポリシー一覧
-
-awst secrets ls              # シークレット一覧
-awst secrets show NAME       # シークレットメタデータ詳細
-awst secrets get NAME        # シークレット値取得
-awst secrets create NAME --string "value"  # シークレット作成（直接実行）
-awst secrets update NAME --string "new-value"  # シークレット更新（直接実行）
-awst secrets delete NAME     # 削除コマンドを出力（print only）
-
-awst eks list-clusters           # EKS クラスター一覧
-awst eks list-clusters --csv     # EKS クラスター一覧（CSV形式）
-awst eks update-kubeconfig NAME          # クラスターの kubeconfig を更新
-awst eks update-kubeconfig NAME --dry-run # kubeconfig を標準出力に表示
-
-awst r53 records ZONE                    # Route 53 レコード一覧
-awst r53 records --mlr ZONE              # Route 53 レコード一覧（Miller でフォーマット）
+```text
+cloud-cli/
+├── aws-cli/bin/awst, commands/, skills/   # 例: skills/billing/SKILL.md
+├── g-cli/bin/gcloudt, commands/
+└── tc-cli/bin/tcclit, commands/, bin/tccli（AssumeRole）
 ```
 
-### GCP CLI (`gcloudt`)
+## 実装後のテストとドキュメント更新
 
-```bash
-gcloudt gce ls                      # Compute Engine インスタンス一覧
-gcloudt gce ls --csv                # CSV 形式で出力
-gcloudt gce show INSTANCE_NAME      # インスタンス詳細情報（SA、ボリューム）
-gcloudt gce images                  # イメージ一覧
-gcloudt gce templates               # インスタンステンプレート一覧
-gcloudt gce groups                  # インスタンスグループ一覧
-gcloudt gce group-instances GROUP   # グループのメンバー一覧（unmanaged/managed 自動判定）
+- `bash -n` で対象 `commands/*` スクリプトの構文チェック
+- `help` および代表サブコマンドの動作確認（可能な環境で）
+- 新規・変更したユーザー向けコマンドは [README.md](README.md) に追記（本ファイルに使用例を二重管理しない）
+- コマンド名・引数・CLI 挙動をユーザー依頼なく変更しない
 
-gcloudt firewall ls                 # VPC Firewall ルール一覧
-gcloudt firewall ls --csv           # CSV 形式で出力
-gcloudt firewall show RULE_NAME     # 詳細ルール表示
+## 専用 Skill へのルーティング
 
-gcloudt sa ls                       # Service Account 一覧
-gcloudt sa ls --csv                 # CSV 形式で出力
-gcloudt sa show EMAIL               # Service Account 詳細情報
+ドメイン固有の手順・API 制約は専用 Skill を正本とする。
 
-gcloudt gcs ls                                      # Cloud Storage バケット一覧
-gcloudt gcs ls --csv                                # CSV 形式で出力
-gcloudt gcs ls BUCKET_NAME                         # バケット内のオブジェクト一覧
-gcloudt gcs ls BUCKET_NAME --csv                   # オブジェクト一覧（CSV形式）
+| 領域 | Skill |
+|------|--------|
+| AWS 請求 (Cost Explorer) | [aws-cli/skills/billing/SKILL.md](aws-cli/skills/billing/SKILL.md) |
+| `awst` サブコマンドの新規追加 | [.cursor/skills/awst-add-command/SKILL.md](.cursor/skills/awst-add-command/SKILL.md) |
 
-gcloudt gcs cp gs://BUCKET/OBJECT LOCAL_PATH      # オブジェクトをダウンロード（pull）
-gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT      # ローカルファイルをアップロード（push）
-
-gcloudt gcs rm gs://BUCKET/OBJECT                 # オブジェクトを削除
-gcloudt gcs rm gs://BUCKET/PREFIX/ -r             # プレフィックス配下を再帰削除
-
-gcloudt clb ls                     # Load Balancer（forwarding-rule）一覧
-gcloudt clb ls --csv               # CSV 形式で出力
-gcloudt clb info NAME              # LB の詳細ツリー（IP → backend インスタンス）
-gcloudt clb addresses              # 予約済み Global/Regional IP アドレス一覧
-gcloudt clb ssl-certs              # SSL 証明書（compute, 旧方式）
-gcloudt clb certificates           # Certificate Manager 証明書一覧
-gcloudt clb backend-services       # Backend Service 一覧
-gcloudt clb target-proxies         # HTTP + HTTPS Target Proxy 一覧（TYPE 列付き）
-gcloudt clb cert-maps              # Certificate Manager maps 一覧
-gcloudt clb cert-map-entries MAP   # Certificate Manager map のエントリ一覧
-
-gcloudt project describe [PROJECT]  # プロジェクト情報（既定: CLOUDSDK_CORE_PROJECT）
-gcloudt project list                # プロジェクト一覧
-
-gcloudt network ls                  # VPC ネットワーク一覧（subnetMode / routingMode）
-gcloudt network subnets             # サブネット一覧
-gcloudt network routes              # ルート一覧（簡略化）
-gcloudt network routers             # Cloud Router 一覧
-gcloudt network nat [ROUTER]        # Cloud NAT 設定
-
-gcloudt dns zones                   # Cloud DNS マネージドゾーン一覧
-gcloudt dns records ZONE            # ゾーン内のレコードセット一覧
-```
-
-### Tencent Cloud CLI (`tcclit`)
-
-```bash
-tcclit cvm ls           # CVM インスタンス一覧
-tcclit cvm types        # 使用可能なインスタンスタイプ一覧
-tcclit cvm start NAME   # インスタンスを起動（直接実行）
-tcclit cvm stop NAME    # 停止コマンドを出力（print only）
-tcclit vpc sg           # セキュリティグループ一覧
-tcclit teo zones                              # EdgeOne ゾーン一覧
-tcclit teo acceleration-domains ZONE_ID       # 加速ドメイン一覧
-tcclit teo describe-rules ZONE_ID             # ルールエンジン
-tcclit cdn ls                    # CDN ドメイン一覧
-tcclit cdn config DOMAIN         # ドメイン設定 (HTTPS 証明書等)
-tcclit ssl search QUERY          # 証明書検索 (ドメイン名・ID)
-tcclit ssl show CERT_ID          # 証明書詳細
-tcclit lb ls                     # ロードバランサー一覧
-tcclit lb listeners NAME|ID      # リスナー一覧
-tcclit lb rules NAME|ID          # SNI ルール一覧 (ドメイン・証明書 ID)
-tcclit lb targets NAME|ID        # バックエンド一覧
-```
-
-## 設置方法
-
-各スクリプトは `~/bin/` へのシンボリックリンクで使用：
-
-```bash
-ln -s /path/to/cloud-cli/aws-cli/bin/awst ~/bin/awst
-ln -s /path/to/cloud-cli/g-cli/bin/gcloudt ~/bin/gcloudt
-ln -s /path/to/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
-```
-
-## 主要なサブコマンド実装
-
-### AWS EC2 (`aws-cli/commands/ec2`)
-
-- **ls**: インスタンス一覧（テーブル/CSV）
-- **start/stop**: インスタンス制御
-- **sg_rules**: セキュリティグループルール表示
-- **Helper**: `ec2_get_id()` でタグ/インスタンス名から ID を検索
-
-### AWS ALB (`aws-cli/commands/alb`)
-
-- **ls**: ALB 一覧（Name, DNS, Scheme, VpcId, SecurityGroups）
-  - Security Group が複数ある場合は `,` で連結して表示
-- **listener NAME**: 指定 ALB のリスナー情報（Port, Protocol, DefaultActions, Certificates）
-- **tg NAME**: 指定 ALB のターゲットグループ一覧（Name, Port, Protocol, HealthCheckPath）
-- **health TG_NAME**: ターゲットグループのヘルスチェック結果（TargetId, Port, State, Reason）
-- **rule LISTENER_ARN**: リスナーのルール詳細を表示
-- **Helper**: `get_alb_arn_by_name()` で ALB 名から ARN を取得、`get_tg_arn_by_name()` でターゲットグループ名から ARN を取得
-
-### AWS IAM (`aws-cli/commands/iam`)
-
-- **policy ls**: Customer Managed Policy 一覧（テーブル/CSV）
-- **policy show NAME/ARN**: Policy 詳細情報（バージョン、ポリシードキュメント）
-- **policy create NAME <file|--document JSON>**: Customer Managed Policy 作成（JSON ファイルまたは JSON 文字列指定）
-- **role ls**: Role 一覧（テーブル/CSV）
-- **role show NAME**: Role 詳細情報（AssumeRolePolicyDocument、アタッチ済みポリシー、インラインポリシー）
-- **role policies NAME**: Role にアタッチされたポリシー一覧
-- **role inline-policies NAME**: Role に埋め込まれたインラインポリシー一覧（ポリシードキュメント付き）
-- **user ls**: User 一覧（テーブル/CSV）
-- **user show NAME**: User 詳細情報（アタッチ済みポリシー）
-- **user policies NAME**: User にアタッチされたポリシー一覧
-- **user create NAME [--policy ARN|NAME]...**: User 作成＋ポリシー直接アタッチ（複数対応）
-  - Policy ARN または名前（Customer Managed/AWS Managed いずれでも指定可）で指定可能
-- **user attach-policy NAME POLICY**: User にポリシーをアタッチ（Policy 名または ARN で指定）
-- **access-key show NAME**: User のアクセスキー一覧（AccessKeyId, Status, CreateDate）
-- **access-key create NAME**: User 用のアクセスキー作成（AccessKeyId, SecretAccessKey 表示＋レコメンデーション）
-
-### AWS Secrets Manager (`aws-cli/commands/secrets`)
-
-- **ls**: シークレット一覧（テーブル/CSV）
-- **show NAME**: シークレットメタデータ詳細（ARN、作成日、最終変更日、ローテーション設定、タグなど）
-- **get NAME**: シークレット値取得（プレーンテキスト）
-- **get NAME --json**: シークレット値取得（JSON形式でパース）
-- **create NAME --string VALUE**: 文字列シークレットを作成
-- **create NAME --json VALUE**: JSON シークレットを作成
-- **create NAME --file PATH**: ファイルからシークレットを作成
-- **update NAME --string/--json/--file**: シークレット値を更新
-- **delete NAME**: シークレットを削除（30日間の復旧期間）
-- **delete NAME --force**: シークレットを即座に削除
-- **restore NAME**: 削除したシークレットを復元
-
-### AWS EKS (`aws-cli/commands/eks`)
-
-- **list-clusters**: EKS クラスター一覧（Name, Version, Status, Endpoint, RoleArn, Created）テーブル/CSV
-- **update-kubeconfig NAME**: 指定クラスターの kubeconfig をローカルに更新
-- **update-kubeconfig NAME --dry-run**: kubeconfig を標準出力に出力（kubeconfig の確認・パイプ処理用）
-
-### GCP GCE (`g-cli/commands/gce`)
-
-- **ls**: Compute Engine インスタンス一覧（テーブル/CSV）
-- **show NAME**: インスタンス詳細情報（Service Account、ボリューム、ネットワーク、タグ、ラベル）
-- **images**: イメージ一覧
-- **templates**: インスタンステンプレート一覧
-- **groups**: インスタンスグループ一覧
-- **group-instances GROUP**: グループのメンバー一覧。zone/region を自動判定（unmanaged/managed 両対応）
-- **Helper**: `gce_ls_csv()` でマシンタイプ情報（vCPU、メモリ）を取得・整形
-
-### GCP Load Balancer (`g-cli/commands/clb`)
-
-- **ls**: forwarding-rule 一覧（target-proxy → url-map 解決）
-- **info NAME**: IP から backend インスタンスまでの詳細ツリー表示
-- **ip**: IP アドレスのみ表示
-- **addresses**: 予約済み Global/Regional IP 一覧（compute addresses）
-- **ssl-certs**: SSL 証明書一覧（compute ssl-certificates、旧方式）
-- **certificates**: Certificate Manager 証明書一覧
-- **backend-services**: Backend Service 一覧
-- **target-proxies**: HTTP/HTTPS Target Proxy を TYPE 列で結合表示
-- **cert-maps / cert-map-entries**: Certificate Manager maps / entries
-
-### GCP Project (`g-cli/commands/project`)
-
-- **describe [PROJECT]**: `gcloud projects describe`（既定: CLOUDSDK_CORE_PROJECT）
-- **list**: `gcloud projects list`
-- 注: Cloud Resource Manager API が無効なプロジェクトでは permission denied
-
-### GCP Network (`g-cli/commands/network`)
-
-- **ls**: VPC ネットワーク一覧（subnetMode は autoCreateSubnetworks から導出）
-- **subnets**: サブネット一覧
-- **routes**: ルート一覧（name / network / destRange / nextHop / priority を簡略化表示）
-- **routers**: Cloud Router 一覧
-- **nat [ROUTER]**: Cloud NAT 設定（router describe の nat 情報）
-
-### GCP DNS (`g-cli/commands/dns`)
-
-- **zones**: マネージドゾーン一覧
-- **records ZONE**: ゾーン内の record-sets 一覧
-
-### GCP Firewall (`g-cli/commands/firewall`)
-
-- **ls**: VPC Firewall ルール一覧（テーブル/CSV）
-- **show NAME**: 指定ルールの詳細表示（allowed/denied ルール展開）
-
-### GCP Service Account (`g-cli/commands/sa`)
-
-- **ls**: Service Account 一覧（テーブル/CSV）
-- **show EMAIL**: Service Account 詳細情報（メール、Display Name、関連キー情報）
-
-### GCP Cloud Storage (`g-cli/commands/gcs`)
-
-- **ls**: バケット一覧（テーブル/CSV）
-- **ls BUCKET_NAME**: 指定バケット内のオブジェクト一覧（テーブル/CSV）
-- **cp**: GCS オブジェクトのアップロード/ダウンロード（`gsutil cp` ラッパー）
-  - pull: `gcloudt gcs cp gs://BUCKET/OBJECT LOCAL_PATH`
-  - push: `gcloudt gcs cp LOCAL_PATH gs://BUCKET/OBJECT`
-- **Helper**: `gcs_buckets_csv()` でバケット情報を取得、`gcs_objects_csv()` でオブジェクト情報を取得
-
-### Tencent Cloud CVM (`tc-cli/commands/cvm`)
-
-- **ls**: インスタンス一覧（テーブル/CSV）
-- **types**: 使用可能なインスタンスタイプ一覧（DescribeInstanceTypeConfigs、テーブル/CSV）
-- **start/stop**: インスタンス制御（tccli API 呼び出し）
-- **Helper**: `cvm_get_id()` でインスタンス名またはタグから ID を検索
-
-### Tencent Cloud CDN (`tc-cli/commands/cdn`)
-
-- **ls**: CDN ドメイン一覧（DescribeDomains、テーブル/CSV）
-- **config DOMAIN**: ドメイン設定詳細（DescribeDomainsConfig、HTTPS 証明書情報含む）
-
-### Tencent Cloud SSL (`tc-cli/commands/ssl`)
-
-- **search QUERY**: 証明書検索（DescribeCertificates --SearchKey、テーブル/CSV）
-- **show CERT_ID**: 証明書詳細（有効期限、紐付けリソース等）
-
-### Tencent Cloud Load Balancer (`tc-cli/commands/lb`)
-
-- **ls**: ロードバランサー一覧（DescribeLoadBalancers、テーブル/CSV）
-- **listeners NAME|ID**: リスナー一覧
-- **rules NAME|ID**: SNI ルール一覧（ドメイン・証明書 ID）
-- **targets NAME|ID**: バックエンド一覧（リスナー/ルール単位）
-- **Helper**: `lb_get_id()` で LB 名から ID を検索
-
-### Tencent Cloud EdgeOne (`tc-cli/commands/teo`)
-
-- **zones**: ゾーン一覧（DescribeZones）
-- **acceleration-domains ZONE_ID**: 加速ドメイン一覧（証明書情報含む、テーブル/CSV）
-- **describe-rules ZONE_ID**: ルールエンジン（DescribeRules）
-
-## CLI 依存関係
-
-- **AWS**: `aws` CLI がインストール・認証済み
-- **GCP**: `gcloud` CLI がインストール・認証済み
-- **Tencent Cloud**: `tccli` がインストール・認証済み
-
-各ツールの認証情報は事前に設定されていることを前提としています。
-
-## 開発時の注意
-
-1. **新しいサブコマンド追加**: `commands/` ディレクトリに実行可能ファイルを追加
-2. **引数パース**: メインスクリプト側で `shift` 済み、サブコマンドが第1引数を処理
-3. **エラーハンドリング**: `set -e` でエラーで即座に終了
-4. **CSV 出力**: `column` コマンドやシェル処理で整形（互換性重視）
+請求分析では Cost Explorer のメトリクス（NetUnblendedCost / BlendedCost）、API 制約、請求書とのズレの原因などを上記 billing Skill に従う。
