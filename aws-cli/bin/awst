@@ -72,9 +72,13 @@ if [[ ! -x "$COMMAND" ]]; then
   exit 1
 fi
 
-# 引数なしなら help
+# 引数なしなら help（login はそのまま実行）
 if [[ $# -eq 0 ]]; then
-  exec "$COMMAND" help
+  if [[ "$CMD" == "login" ]]; then
+    exec "$COMMAND"
+  else
+    exec "$COMMAND" help
+  fi
 else
   exec "$COMMAND" "$@"
 fi

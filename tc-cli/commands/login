@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -e
+
+usage() {
+  cat <<EOF
+usage: tcclit login [profile]
+
+Run tc-assume login for a profile.
+
+If profile is omitted, uses TENCENTCLOUD_PROFILE.
+EOF
+}
+
+login_run() {
+  local profile="${1:-}"
+  if [[ -z "$profile" ]]; then
+    profile="${TENCENTCLOUD_PROFILE:-}"
+  fi
+  if [[ -z "$profile" ]]; then
+    echo "tcclit login: profile required (argument or TENCENTCLOUD_PROFILE)" >&2
+    usage >&2
+    exit 1
+  fi
+  if ! command -v tc-assume >/dev/null 2>&1; then
+    echo "tcclit login: tc-assume not found on PATH" >&2
+    exit 1
+  fi
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf 'tc-assume login %q\n' "$profile"
+    exit 0
+  fi
+  exec tc-assume login "$profile"
+}
+
+case "${1:-}" in
+  help|--help|-h)
+    usage
+    ;;
+  "")
+    login_run
+    ;;
+  *)
+    login_run "$1"
+    ;;
+esac

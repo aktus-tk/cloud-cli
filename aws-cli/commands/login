@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -e
+
+usage() {
+  cat <<EOF
+usage: awst login
+
+Run SAML login via saml2aws (--skip-prompt).
+
+Requires saml2aws on PATH.
+EOF
+}
+
+login_run() {
+  if ! command -v saml2aws >/dev/null 2>&1; then
+    echo "awst login: saml2aws not found on PATH" >&2
+    exit 1
+  fi
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%s\n' 'saml2aws login --skip-prompt'
+    exit 0
+  fi
+  exec saml2aws login --skip-prompt
+}
+
+case "${1:-}" in
+  help|--help|-h)
+    usage
+    ;;
+  "")
+    login_run
+    ;;
+  *)
+    echo "awst login: unexpected argument: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

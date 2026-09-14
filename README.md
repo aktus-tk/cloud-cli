@@ -101,6 +101,12 @@ export PATH="$HOME/bin:$PATH"
 
 ### AWS CLI (`awst`)
 
+#### 認証 (saml2aws)
+
+```bash
+awst login             # saml2aws login --skip-prompt
+```
+
 #### AWS コンソール (Granted)
 
 ```bash
@@ -297,6 +303,13 @@ gcloudt dns records ZONE            # ゾーン内のレコードセット一覧
 ### Tencent Cloud CLI (`tcclit`)
 
 `tccli` ラッパーと `tc-assume` による AssumeRole 認証については [README_tccli.md](README_tccli.md) を参照。
+
+#### 認証 (tc-assume)
+
+```bash
+tcclit login                    # tc-assume login（TENCENTCLOUD_PROFILE）
+tcclit login PROFILE            # tc-assume login PROFILE
+```
 
 #### CAM（認証・権限の確認）
 

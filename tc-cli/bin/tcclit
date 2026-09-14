@@ -49,7 +49,8 @@ if [[ ! -x "$COMMAND" ]]; then
 fi
 
 # tc-assume にプロファイルがある場合は必ず assume（TC_ASSUME_WRAPPED で再帰防止）。
-if tc_should_assume; then
+# login は認証取得そのもののため exec ラッパーは使わない。
+if [[ "$CMD" != "login" ]] && tc_should_assume; then
   if [[ $# -eq 0 ]]; then
     tc_assume_exec "$COMMAND" help
   else
@@ -57,9 +58,13 @@ if tc_should_assume; then
   fi
 fi
 
-# 引数なしなら help
+# 引数なしなら help（login はそのまま実行）
 if [[ $# -eq 0 ]]; then
-  exec "$COMMAND" help
+  if [[ "$CMD" == "login" ]]; then
+    exec "$COMMAND"
+  else
+    exec "$COMMAND" help
+  fi
 else
   exec "$COMMAND" "$@"
 fi

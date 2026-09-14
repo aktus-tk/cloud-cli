@@ -92,6 +92,7 @@ tcclit cam me
 
 ```bash
 tc-assume exec project-a -- tccli sts GetCallerIdentity
+tcclit login project-a   # または tc-assume login project-a
 ```
 
 ## 実装ファイル
