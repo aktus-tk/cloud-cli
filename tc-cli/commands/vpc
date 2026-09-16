@@ -1,35 +1,292 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-cmd=$1
+cmd=${1:-}
 shift || true
 
+usage() {
+  cat <<EOF
+usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
+       tcclit vpc sg show <sg-id|name>
 
-sg_ls () {
-#for sg in `tccli vpc DescribeSecurityGroups --filter  SecurityGroupSet[].SecurityGroupId --output text`; do
-tccli vpc DescribeSecurityGroups --filter  SecurityGroupSet[].[SecurityGroupId,SecurityGroupName] --output text | while read sg name; do
-  JSON=`tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId $sg`
-  echo $JSON | jq --arg sg $sg --arg name $name -r '.SecurityGroupPolicySet | .Egress[] | [$sg, $name, "Egress", .PolicyDescription, .Protocol, .Port, .CidrBlock, .Action ]| @csv '
-  echo $JSON | jq --arg sg $sg --arg name $name -r '.SecurityGroupPolicySet | .Ingress[] | [$sg, $name, "Ingress", .PolicyDescription, .Protocol, .Port, .CidrBlock, .Action ]| @csv '
-done
+ls lists security groups (sg-id, sg-name). With --detail, includes all rules as CSV
+(sg-id, sg-name, direction, desc, proto, port, cidr, action).
+show prints inbound/outbound rules for one security group (readable table).
 
+options (ls --detail):
+  --cidr CIDR       only rules whose CidrBlock contains this IP or prefix (e.g. 18.180.232.11)
+  --ingress-only    omit egress rules (default: ingress + egress)
+
+examples:
+  tcclit vpc sg ls
+  tcclit vpc sg ls --detail
+  tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only
+  tcclit vpc sg show sg-abcdefgh
+  tcclit vpc sg show my-app-sg
+EOF
 }
 
+sg_resolve_id() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "missing security group id or name" >&2
+    return 1
+  fi
+  if [[ "$key" =~ ^sg- ]]; then
+    echo "$key"
+    return 0
+  fi
+  local id
+  id="$(tccli vpc DescribeSecurityGroups \
+    --Filters "[{\"Name\":\"security-group-name\",\"Values\":[\"$key\"]}]" \
+    --output json | jq -r '.SecurityGroupSet[0].SecurityGroupId // empty')"
+  if [[ -n "$id" ]]; then
+    echo "$id"
+    return 0
+  fi
+  echo "Security group not found: $key" >&2
+  return 1
+}
+
+sg_show_one_policy_line() {
+  local direction="$1"
+  jq -r --arg d "$direction" '
+    . as $rule |
+    ($rule.Protocol // "ALL") as $proto |
+    ($rule.Port // "all") as $port |
+    ($rule.Action // "-") as $action |
+    (
+      if (($rule.CidrBlock // "") != "") then "CIDR=\($rule.CidrBlock)"
+      elif (($rule.Ipv6CidrBlock // "") != "") then "CIDR6=\($rule.Ipv6CidrBlock)"
+      elif (($rule.SecurityGroupId // "") != "") then "SG=\($rule.SecurityGroupId)"
+      elif (($rule.AddressTemplate.AddressId // "") != "") then "ADDR=\($rule.AddressTemplate.AddressId)"
+      elif (($rule.AddressTemplate.AddressGroupId // "") != "") then "ADDRGRP=\($rule.AddressTemplate.AddressGroupId)"
+      elif (($rule.ServiceTemplate.ServiceId // "") != "") then "SVC=\($rule.ServiceTemplate.ServiceId)"
+      elif (($rule.ServiceTemplate.ServiceGroupId // "") != "") then "SVCGRP=\($rule.ServiceTemplate.ServiceGroupId)"
+      else "(none listed)"
+      end
+    ) as $target |
+    ($rule.PolicyDescription // "") as $desc |
+    if $desc != "" then
+      "\($d)\t\($proto)\t\($port)\t\($action)\t\($target)\t\($desc)"
+    else
+      "\($d)\t\($proto)\t\($port)\t\($action)\t\($target)"
+    end
+  '
+}
+
+_cidr_matches() {
+  local block="${1:-}"
+  local needle="${2:-}"
+  [[ -n "$block" && -n "$needle" ]] || return 1
+  if [[ "$block" == *"$needle"* ]]; then
+    return 0
+  fi
+  local ip="${needle%%/*}"
+  [[ "$block" == "${ip}/32" || "$block" == "$ip" ]] && return 0
+  return 1
+}
+
+sg_ls_brief() {
+  echo "sg-id,sg-name"
+  tccli vpc DescribeSecurityGroups --output json \
+    | jq -r '.SecurityGroupSet[]? | [.SecurityGroupId, .SecurityGroupName] | @csv'
+}
+
+sg_ls_detail() {
+  local cidr_filter=""
+  local ingress_only=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cidr)
+        cidr_filter="${2:-}"
+        shift 2
+        ;;
+      --cidr=*)
+        cidr_filter="${1#--cidr=}"
+        shift
+        ;;
+      --ingress-only)
+        ingress_only=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "unknown option: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  echo "sg-id,sg-name,direction,description,protocol,port,cidr,action"
+
+  while IFS=$'\t' read -r sg name; do
+    [[ -z "$sg" ]] && continue
+    JSON="$(tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId "$sg" --output json)"
+
+    _emit_csv_lines() {
+      local dir="$1"
+      local policy_key="$2"
+      echo "$JSON" | jq -r --arg sg "$sg" --arg name "$name" --arg dir "$dir" \
+        --arg pkey "$policy_key" \
+        '.SecurityGroupPolicySet[$pkey][]? |
+        [$sg, $name, $dir, (.PolicyDescription // ""), (.Protocol // ""), (.Port // ""), (.CidrBlock // ""), (.Action // "")] | @csv'
+    }
+
+    if [[ "$ingress_only" == false ]]; then
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if [[ -n "$cidr_filter" ]]; then
+          cidr="$(echo "$line" | awk -F',' '{gsub(/"/,"",$7); print $7}')"
+          _cidr_matches "$cidr" "$cidr_filter" || continue
+        fi
+        echo "$line"
+      done < <(_emit_csv_lines "Egress" "Egress")
+    fi
+
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      if [[ -n "$cidr_filter" ]]; then
+        cidr="$(echo "$line" | awk -F',' '{gsub(/"/,"",$7); print $7}')"
+        _cidr_matches "$cidr" "$cidr_filter" || continue
+      fi
+      echo "$line"
+    done < <(_emit_csv_lines "Ingress" "Ingress")
+  done < <(tccli vpc DescribeSecurityGroups \
+    --filter 'SecurityGroupSet[].[SecurityGroupId,SecurityGroupName]' \
+    --output text)
+}
+
+sg_ls() {
+  local detail=false
+  local cidr_filter=""
+  local ingress_only=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --detail)
+        detail=true
+        shift
+        ;;
+      --cidr)
+        cidr_filter="${2:-}"
+        shift 2
+        ;;
+      --cidr=*)
+        cidr_filter="${1#--cidr=}"
+        shift
+        ;;
+      --ingress-only)
+        ingress_only=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "unknown option: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ "$detail" == true ]]; then
+    local detail_args=()
+    [[ -n "$cidr_filter" ]] && detail_args+=(--cidr "$cidr_filter")
+    [[ "$ingress_only" == true ]] && detail_args+=(--ingress-only)
+    sg_ls_detail "${detail_args[@]}"
+    return
+  fi
+
+  if [[ -n "$cidr_filter" || "$ingress_only" == true ]]; then
+    echo "options --cidr and --ingress-only require ls --detail" >&2
+    usage >&2
+    exit 1
+  fi
+
+  sg_ls_brief
+}
+
+sg_show() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    echo "Usage: tcclit vpc sg show <sg-id|name>" >&2
+    exit 1
+  fi
+
+  local gid
+  gid="$(sg_resolve_id "$key")"
+
+  local sg_json policy_json
+  sg_json="$(tccli vpc DescribeSecurityGroups \
+    --SecurityGroupIds "[\"$gid\"]" \
+    --output json)"
+  policy_json="$(tccli vpc DescribeSecurityGroupPolicies \
+    --SecurityGroupId "$gid" \
+    --output json)"
+
+  echo "$sg_json" | jq -r '.SecurityGroupSet[0] |
+    "SecurityGroupId: \(.SecurityGroupId)",
+    "SecurityGroupName: \(.SecurityGroupName)",
+    "VpcId: \(.VpcId // "-")",
+    "Description: \(.SecurityGroupDesc // "-")",
+    "IsDefault: \(.IsDefault)",
+    ""'
+
+  echo "=== Inbound ==="
+  echo -e "Dir\tProto\tPort\tAction\tTarget\tDescription"
+  echo "$policy_json" | jq -c '.SecurityGroupPolicySet.Ingress[]?' 2>/dev/null | while read -r row; do
+    [[ -z "$row" ]] && continue
+    echo "$row" | sg_show_one_policy_line "IN"
+  done | column -t -s $'\t' || true
+
+  echo ""
+  echo "=== Outbound ==="
+  echo -e "Dir\tProto\tPort\tAction\tTarget\tDescription"
+  echo "$policy_json" | jq -c '.SecurityGroupPolicySet.Egress[]?' 2>/dev/null | while read -r row; do
+    [[ -z "$row" ]] && continue
+    echo "$row" | sg_show_one_policy_line "OUT"
+  done | column -t -s $'\t' || true
+}
 
 case "$cmd" in
   sg)
-    sg_ls
-    #teo_describe_rules "$@"
+    case "${1:-}" in
+      show)
+        shift
+        sg_show "$@"
+        ;;
+      ls|list)
+        shift || true
+        sg_ls "$@"
+        ;;
+      help|-h|--help|"")
+        usage
+        ;;
+      *)
+        echo "unknown: ${1:-}" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
     ;;
   help|-h|--help|"")
     echo
     echo "Examples:"
-    echo "  tcclit vpc sg"
+    echo "  tcclit vpc sg ls"
+    echo "  tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only"
+    echo "  tcclit vpc sg show my-app-sg"
     ;;
   *)
     echo "unknown: $cmd" >&2
-    echo "run: tcclit teo help" >&2
+    echo "run: tcclit vpc help" >&2
     exit 1
     ;;
 esac
-
