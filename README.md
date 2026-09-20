@@ -367,7 +367,7 @@ tcclit lb targets NAME|ID        # バックエンド一覧
 
 ```bash
 tcclit vpc sg ls                           # セキュリティグループ一覧 (sg-id, sg-name)
-tcclit vpc sg ls --detail                  # 全 SG の Ingress/Egress ルール (CSV)
+tcclit vpc sg ls --detail                  # 全 SG の Ingress/Egress ルール（awst sg ls --detail と同じブロック形式）
 tcclit vpc sg ls --detail --cidr 18.180.232.11         # 指定 CIDR を含むルールのみ
 tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only
 tcclit vpc sg show SG_ID_OR_NAME           # 1 つの SG のルール（表形式）

@@ -9,8 +9,10 @@ usage() {
 usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
        tcclit vpc sg show <sg-id|name>
 
-ls lists security groups (sg-id, sg-name). With --detail, includes all rules as CSV
-(sg-id, sg-name, direction, desc, proto, port, cidr, action).
+ls lists security groups (sg-id, sg-name).
+With --detail, prints each security group as a block (same layout as
+awst sg ls --detail): a metadata row (Region/GroupName/GroupId/VpcId/Description/Tags)
+followed by Inbound / Outbound rule tables (Dir, Proto, Ports, Action, Source|Destination).
 show prints inbound/outbound rules for one security group (readable table).
 
 options (ls --detail):
@@ -93,6 +95,54 @@ sg_ls_brief() {
     | jq -r '.SecurityGroupSet[]? | [.SecurityGroupId, .SecurityGroupName] | @csv'
 }
 
+sg_effective_region() {
+  local region="${CLOUD_CLI_TCCLI_REGION:-${TENCENTCLOUD_REGION:-}}"
+  if [[ -z "$region" ]]; then
+    local profile="${TCCLI_PROFILE:-${TENCENTCLOUD_PROFILE:-default}}"
+    local conf_file="${HOME}/.tccli/${profile}.configure"
+    if [[ -f "$conf_file" ]]; then
+      region="$(jq -r '._sys_param.region // empty' "$conf_file" 2>/dev/null || true)"
+    fi
+  fi
+  printf '%s' "$region"
+}
+
+# One rule row: Dir, Proto, Ports, Action, Target (with description appended).
+sg_ls_detail_rule_line() {
+  local direction="$1"
+  jq -r --arg d "$direction" '
+    def with_desc($desc): if (($desc // "") == "") then "" else " (\($desc))" end;
+    . as $rule |
+    ($rule.Protocol // "ALL") as $proto |
+    ($rule.Port // "all") as $port |
+    ($rule.Action // "-") as $action |
+    (
+      if (($rule.CidrBlock // "") != "") then "CIDR=\($rule.CidrBlock)"
+      elif (($rule.Ipv6CidrBlock // "") != "") then "CIDR6=\($rule.Ipv6CidrBlock)"
+      elif (($rule.SecurityGroupId // "") != "") then "SG=\($rule.SecurityGroupId)"
+      elif (($rule.AddressTemplate.AddressId // "") != "") then "ADDR=\($rule.AddressTemplate.AddressId)"
+      elif (($rule.AddressTemplate.AddressGroupId // "") != "") then "ADDRGRP=\($rule.AddressTemplate.AddressGroupId)"
+      elif (($rule.ServiceTemplate.ServiceId // "") != "") then "SVC=\($rule.ServiceTemplate.ServiceId)"
+      elif (($rule.ServiceTemplate.ServiceGroupId // "") != "") then "SVCGRP=\($rule.ServiceTemplate.ServiceGroupId)"
+      else "(none listed)"
+      end
+    ) as $target |
+    "\($d)\t\($proto)\t\($port)\t\($action)\t\($target)\(with_desc($rule.PolicyDescription))"
+  '
+}
+
+# Emit rule rows for one direction, honoring the optional --cidr filter.
+sg_ls_detail_rule_lines() {
+  local policy_json="$1" dir_key="$2" dir_label="$3" cidr_filter="$4"
+  echo "$policy_json" | jq -c ".SecurityGroupPolicySet.${dir_key}[]?" 2>/dev/null | while read -r row; do
+    [[ -z "$row" ]] && continue
+    if [[ -n "$cidr_filter" ]]; then
+      _cidr_matches "$(echo "$row" | jq -r '.CidrBlock // ""')" "$cidr_filter" || continue
+    fi
+    echo "$row" | sg_ls_detail_rule_line "$dir_label"
+  done
+}
+
 sg_ls_detail() {
   local cidr_filter=""
   local ingress_only=false
@@ -123,43 +173,51 @@ sg_ls_detail() {
     esac
   done
 
-  echo "sg-id,sg-name,direction,description,protocol,port,cidr,action"
+  local region sg_data
+  region="$(sg_effective_region)"
+  sg_data="$(tccli vpc DescribeSecurityGroups --output json)"
 
-  while IFS=$'\t' read -r sg name; do
-    [[ -z "$sg" ]] && continue
-    JSON="$(tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId "$sg" --output json)"
+  local gid
+  while IFS= read -r gid; do
+    [[ -z "$gid" ]] && continue
 
-    _emit_csv_lines() {
-      local dir="$1"
-      local policy_key="$2"
-      echo "$JSON" | jq -r --arg sg "$sg" --arg name "$name" --arg dir "$dir" \
-        --arg pkey "$policy_key" \
-        '.SecurityGroupPolicySet[$pkey][]? |
-        [$sg, $name, $dir, (.PolicyDescription // ""), (.Protocol // ""), (.Port // ""), (.CidrBlock // ""), (.Action // "")] | @csv'
-    }
+    local meta name vpcid desc tags
+    meta="$(echo "$sg_data" | jq -c --arg id "$gid" '.SecurityGroupSet[] | select(.SecurityGroupId == $id)')"
+    name="$(echo "$meta" | jq -r '.SecurityGroupName // ""')"
+    vpcid="$(echo "$meta" | jq -r '.VpcId // ""')"
+    desc="$(echo "$meta" | jq -r '.SecurityGroupDesc // ""')"
+    tags="$(echo "$meta" | jq -r '((.TagSet // []) | map("\(.Key)=\(.Value)") | join(","))')"
 
+    local policy_json in_lines out_lines
+    policy_json="$(tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId "$gid" --output json)"
+    in_lines="$(sg_ls_detail_rule_lines "$policy_json" "Ingress" "IN" "$cidr_filter")"
+    out_lines=""
     if [[ "$ingress_only" == false ]]; then
-      while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        if [[ -n "$cidr_filter" ]]; then
-          cidr="$(echo "$line" | awk -F',' '{gsub(/"/,"",$7); print $7}')"
-          _cidr_matches "$cidr" "$cidr_filter" || continue
-        fi
-        echo "$line"
-      done < <(_emit_csv_lines "Egress" "Egress")
+      out_lines="$(sg_ls_detail_rule_lines "$policy_json" "Egress" "OUT" "$cidr_filter")"
     fi
 
-    while IFS= read -r line; do
-      [[ -z "$line" ]] && continue
-      if [[ -n "$cidr_filter" ]]; then
-        cidr="$(echo "$line" | awk -F',' '{gsub(/"/,"",$7); print $7}')"
-        _cidr_matches "$cidr" "$cidr_filter" || continue
-      fi
-      echo "$line"
-    done < <(_emit_csv_lines "Ingress" "Ingress")
-  done < <(tccli vpc DescribeSecurityGroups \
-    --filter 'SecurityGroupSet[].[SecurityGroupId,SecurityGroupName]' \
-    --output text)
+    # --cidr 指定時は一致ルールが無い SG を出力しない
+    if [[ -n "$cidr_filter" && -z "$in_lines" && -z "$out_lines" ]]; then
+      continue
+    fi
+
+    echo "---"
+    echo -e "Region\tGroupName\tGroupId\tVpcId\tDescription\tTags"
+    echo -e "$region\t$name\t$gid\t$vpcid\t$desc\t$tags" | column -t -s $'\t'
+    echo ""
+
+    if [[ -n "$in_lines" ]]; then
+      echo "  Inbound:"
+      echo -e "  Dir\tProto\tPorts\tAction\tSource"
+      printf '%s\n' "$in_lines" | column -t -s $'\t'
+    fi
+    if [[ -n "$out_lines" ]]; then
+      echo "  Outbound:"
+      echo -e "  Dir\tProto\tPorts\tAction\tDestination"
+      printf '%s\n' "$out_lines" | column -t -s $'\t'
+    fi
+    echo ""
+  done < <(echo "$sg_data" | jq -r '.SecurityGroupSet[]?.SecurityGroupId')
 }
 
 sg_ls() {
