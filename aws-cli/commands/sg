@@ -104,6 +104,7 @@ sg_ls() {
 sg_show_one_perm_line() {
   local direction="$1"
   jq -r --arg d "$direction" '
+    def with_desc($desc): if ($desc // "") == "" then "" else " (\($desc))" end;
     . as $rule |
     ($rule.IpProtocol // "tcp") as $proto |
     (
@@ -113,9 +114,9 @@ sg_show_one_perm_line() {
       end
     ) as $range |
     (
-      [ $rule.IpRanges[]? | "CIDR=\(.CidrIp)" ] +
-      [ $rule.UserIdGroupPairs[]? | "SG=\(.GroupId) (\(.GroupName // ""))" ] +
-      [ $rule.PrefixListIds[]? | "PL=\(.PrefixListId)" ]
+      [ $rule.IpRanges[]? | "CIDR=\(.CidrIp)\(with_desc(.Description))" ] +
+      [ $rule.UserIdGroupPairs[]? | "SG=\(.GroupId)\(with_desc(.GroupName // .Description))" ] +
+      [ $rule.PrefixListIds[]? | "PL=\(.PrefixListId)\(with_desc(.Description))" ]
     ) | if length > 0 then . else ["(none listed)"] end
     | .[] |
     "\($d)\t\($proto)\t\($range)\t\(.)"
