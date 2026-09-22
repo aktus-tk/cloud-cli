@@ -227,10 +227,13 @@ awst s3 policy BUCKET --json    # バケットポリシー（JSON 全文）
 
 ```bash
 awst lightsail ls        # Lightsail インスタンス一覧
-awst waf ls              # WAF WebACL 一覧
-awst waf show my-waf     # WebACL 詳細（名前 / Id / ARN いずれか）
+awst waf webacl ls       # Web ACL 一覧
+awst waf webacl show my-waf          # Web ACL 詳細表示（名前 / Id / ARN いずれか）
 awst waf ipset ls        # IP set 一覧（既定 scope CLOUDFRONT, us-east-1）
+awst waf ipset show my-ipset         # IP set 詳細表示（IP アドレス一覧）
 awst waf ipset ls --scope REGIONAL   # リージョナル IP set 一覧（現在のリージョン）
+awst waf rulegroup ls    # Rule group 一覧
+awst waf rulegroup show my-rule-group # Rule group 詳細表示
 awst sg ls               # セキュリティグループ一覧
 awst acm ls              # 証明書一覧
 ```

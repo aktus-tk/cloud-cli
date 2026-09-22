@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Web ACLs: CloudFront (GLOBAL) WAFv2 — region us-east-1, scope CLOUDFRONT
-# IP sets:  scope CLOUDFRONT (default, us-east-1) or REGIONAL (current region)
+# WAFv2 参照用サブコマンド（読み取り専用・表示のみ）
+#  - Web ACL   : scope CLOUDFRONT（us-east-1）
+#  - IP set    : scope CLOUDFRONT（既定, us-east-1）または REGIONAL（現在のリージョン）
+#  - Rule group: scope CLOUDFRONT（既定, us-east-1）または REGIONAL（現在のリージョン）
 set -euo pipefail
 
 REGION="us-east-1"
@@ -11,50 +13,100 @@ shift || true
 
 usage() {
   cat <<'EOF'
-usage: awst waf <サブコマンド> [引数]
+usage: awst waf <command> [args]
 
-CloudFront 用 WAFv2 の Web ACL（us-east-1, scope CLOUDFRONT）と IP set を調べます（読み取り専用）。
+CloudFront 用 WAFv2 の Web ACL・IP set・Rule group を調べます（読み取り専用・表示のみ）。
 
 commands:
-  ls                        Web ACL 一覧（Name / Id / ARN）
-  show <名前|Id|ARN>        Web ACL の詳細（既定アクション・ルール・メトリクス）
-                            ARN は awst waf cf の出力をそのまま渡せる
-  assoc <WebACL の ARN>     その Web ACL を使っている CloudFront ディストリビューション
-  cf <ディストリビューションId>
-                            そのディストリビューションに付いている WebACLId を表示
-                            （未設定なら "No WAF attached"）
+  webacl ls [--csv]
+                            Web ACL 一覧（Name / Id / ARN）
+  webacl show <名前|Id|ARN>
+                            Web ACL の詳細表示（既定アクション・ルール・メトリクス）
   ipset ls [--scope SCOPE] [--csv]
                             IP set 一覧（Name / Id / ARN）
+  ipset show <名前|Id|ARN> [--scope SCOPE]
+                            IP set の詳細表示（IP アドレス一覧など）
+  rulegroup ls [--scope SCOPE] [--csv]
+                            Rule group 一覧（Name / Id / ARN）
+  rulegroup show <名前|Id|ARN> [--scope SCOPE]
+                            Rule group の詳細表示（ルール・Capacity など）
+  assoc <WebACL の ARN>     その Web ACL を使っている CloudFront ディストリビューションの表示
+  cf <ディストリビューションId>
+                            そのディストリビューションに付いている WebACLId の表示
+                            （未設定なら "No WAF attached"）
 
 options:
-  --scope SCOPE   ipset ls の対象スコープ
+  --scope SCOPE   ipset / rulegroup の対象スコープ
                   CLOUDFRONT（既定, us-east-1） | REGIONAL（現在のリージョン）
-  --csv           ipset ls を CSV 形式で出力
+  --csv           ls を CSV 形式で出力
 
 examples:
-  awst waf ls
-  awst waf show my-waf
-  awst waf show arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  awst waf cf E123ABC456
-  awst waf assoc arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  awst waf webacl ls
+  awst waf webacl show my-waf
+  awst waf webacl show arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
   awst waf ipset ls
-  awst waf ipset ls --scope REGIONAL
+  awst waf ipset show my-ipset
+  awst waf ipset show my-ipset --scope REGIONAL
+  awst waf rulegroup ls
+  awst waf rulegroup show my-rule-group
+  awst waf assoc arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  awst waf cf E123ABC456
   awst --region ap-northeast-1 waf ipset ls --scope REGIONAL
 EOF
 }
 
-# JSON array of all WebACL summaries (paginated list-web-acls)
+# オプション解析。結果は opt_scope / opt_csv に入る。
+# $1 = エラーメッセージ用ラベル, $2 = 1 なら --csv を許可, $3 = 1 なら --scope を許可, 以降 = 引数
+waf_parse_opts() {
+  local label="$1" allow_csv="$2" allow_scope="$3"
+  shift 3
+  opt_scope="CLOUDFRONT"
+  opt_csv=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --scope)
+        [[ "$allow_scope" -eq 1 ]] || { echo "$label: unknown option: $1" >&2; exit 1; }
+        [[ -n "${2:-}" ]] || { echo "$label: --scope requires a value" >&2; exit 1; }
+        opt_scope="$2"; shift 2 ;;
+      --scope=*)
+        [[ "$allow_scope" -eq 1 ]] || { echo "$label: unknown option: $1" >&2; exit 1; }
+        opt_scope="${1#--scope=}"; shift ;;
+      --csv)
+        [[ "$allow_csv" -eq 1 ]] || { echo "$label: unknown option: $1" >&2; exit 1; }
+        opt_csv=1; shift ;;
+      *)
+        echo "$label: unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  case "$opt_scope" in
+    CLOUDFRONT|REGIONAL) ;;
+    *) echo "$label: invalid scope: $opt_scope (CLOUDFRONT|REGIONAL)" >&2; exit 1 ;;
+  esac
+}
+
+# JSON array of all resource summaries (paginated)
+# $1 = webacl|ipset|rulegroup, $2 = CLOUDFRONT|REGIONAL
 waf_list_all_summaries_json() {
-  local marker="" all='[]'
-  local resp part
+  local type="$1" scope="$2"
+  local list_cmd field
+  case "$type" in
+    webacl)    list_cmd="list-web-acls";    field="WebACLs" ;;
+    ipset)     list_cmd="list-ip-sets";     field="IPSets" ;;
+    rulegroup) list_cmd="list-rule-groups"; field="RuleGroups" ;;
+    *) echo "internal error: unknown type: $type" >&2; return 1 ;;
+  esac
+
+  local -a args=(wafv2 "$list_cmd" --scope "$scope")
+  [[ "$scope" == "CLOUDFRONT" ]] && args+=(--region "$REGION")
+
+  local marker="" all='[]' resp part
   while true; do
     if [[ -z "$marker" ]]; then
-      resp="$(aws wafv2 list-web-acls --scope "$SCOPE" --region "$REGION" --output json)"
+      resp="$(aws "${args[@]}" --output json)"
     else
-      resp="$(aws wafv2 list-web-acls --scope "$SCOPE" --region "$REGION" \
-        --next-marker "$marker" --output json)"
+      resp="$(aws "${args[@]}" --next-marker "$marker" --output json)"
     fi
-    part="$(echo "$resp" | jq '[.WebACLs[]?]')"
+    part="$(echo "$resp" | jq --arg f "$field" '[.[$f][]?]')"
     all="$(jq -n --argjson a "$all" --argjson b "$part" '$a + $b')"
     marker="$(echo "$resp" | jq -r '.NextMarker // empty')"
     [[ -z "$marker" ]] && break
@@ -63,18 +115,18 @@ waf_list_all_summaries_json() {
 }
 
 # stdout: name<TAB>id; stderr + exit 1 if not found
-# 引数は Web ACL の 名前 / Id / ARN のいずれか
+# $1 = webacl|ipset|rulegroup, $2 = scope, $3 = 名前 / Id / ARN のいずれか
 waf_resolve_name_id() {
-  local q="${1:-}"
+  local type="$1" scope="$2" q="${3:-}"
   if [[ -z "$q" ]]; then
-    echo "Usage: awst waf show <name|id|arn>" >&2
+    echo "Usage: awst waf $type show <name|id|arn>" >&2
     exit 1
   fi
   # ARN は末尾セグメントが Id（.../webacl/<name>/<id>）
   local qid="$q"
   [[ "$q" == arn:* ]] && qid="${q##*/}"
   local all row
-  all="$(waf_list_all_summaries_json)"
+  all="$(waf_list_all_summaries_json "$type" "$scope")"
   row="$(echo "$all" | jq -c --arg q "$qid" '.[] | select(.Id == $q)' | head -n1)"
   if [[ -z "$row" ]]; then
     row="$(echo "$all" | jq -c --arg q "$q" '.[] | select(.Name == $q)' | head -n1)"
@@ -86,23 +138,65 @@ waf_resolve_name_id() {
   echo "$row" | jq -r '[.Name, .Id] | @tsv'
 }
 
+# $1 = webacl|ipset|rulegroup, $2 = scope, $3 = 1 なら CSV
 waf_ls() {
-  local all
-  all="$(waf_list_all_summaries_json)"
-  local n
+  local type="$1" scope="$2" csv="${3:-0}"
+  local all n
+  all="$(waf_list_all_summaries_json "$type" "$scope")"
   n="$(echo "$all" | jq 'length')"
   if [[ "$n" -eq 0 ]]; then
-    echo "(no Web ACLs)"
+    case "$type" in
+      webacl)    echo "(no Web ACLs)" ;;
+      ipset)     echo "(no IP sets)" ;;
+      rulegroup) echo "(no rule groups)" ;;
+    esac
     return 0
   fi
-  echo -e "Name\tId\tARN"
-  echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | column -t -s $'\t'
+  if [[ "$csv" -eq 1 ]]; then
+    echo "Name,Id,ARN"
+    echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | tr '\t' ','
+  else
+    echo -e "Name\tId\tARN"
+    echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | column -t -s $'\t'
+  fi
 }
 
-waf_show() {
+# Rules 表を表示する。$1 = get-* の JSON, $2 = WebACL|RuleGroup
+waf_print_rules() {
+  local out="$1" key="$2"
+  local rules_len
+  rules_len="$(echo "$out" | jq --arg k "$key" '.[$k].Rules // [] | length')"
+  if [[ "$rules_len" -eq 0 ]]; then
+    echo "Rules: (none)"
+    return 0
+  fi
+
+  echo "Rules:"
+  echo -e "Priority\tName\tAction\tMetrics"
+  echo "$out" | jq -r --arg k "$key" '
+    .[$k].Rules[]? |
+    (
+      if .Action.Allow != null then "ALLOW"
+      elif .Action.Block != null then "BLOCK"
+      elif .Action.Count != null then "COUNT"
+      elif .OverrideAction.Count != null then "COUNT"
+      elif .OverrideAction.None != null then "RULE_GROUP"
+      else "?"
+      end
+    ) as $act |
+    [
+      (.Priority | tostring),
+      .Name,
+      $act,
+      ((.VisibilityConfig // {}) | .MetricName // "-")
+    ] | @tsv
+  ' | column -t -s $'\t'
+}
+
+waf_webacl_show() {
   local q="${1:-}"
   local name id out resolved
-  resolved="$(waf_resolve_name_id "$q")" || exit 1
+  resolved="$(waf_resolve_name_id webacl "$SCOPE" "$q")" || exit 1
   IFS=$'\t' read -r name id <<<"$resolved"
 
   out="$(aws wafv2 get-web-acl --scope "$SCOPE" --region "$REGION" \
@@ -128,33 +222,7 @@ waf_show() {
     ""
   '
 
-  local rules_len
-  rules_len="$(echo "$out" | jq '.WebACL.Rules // [] | length')"
-  if [[ "$rules_len" -eq 0 ]]; then
-    echo "Rules: (none)"
-    return 0
-  fi
-
-  echo "Rules:"
-  echo -e "Priority\tName\tAction\tMetrics"
-  echo "$out" | jq -r '
-    .WebACL.Rules[]? |
-    (
-      if .Action.Allow != null then "ALLOW"
-      elif .Action.Block != null then "BLOCK"
-      elif .Action.Count != null then "COUNT"
-      elif .OverrideAction.Count != null then "COUNT"
-      elif .OverrideAction.None != null then "RULE_GROUP"
-      else "?"
-      end
-    ) as $act |
-    [
-      (.Priority | tostring),
-      .Name,
-      $act,
-      ((.VisibilityConfig // {}) | .MetricName // "-")
-    ] | @tsv
-  ' | column -t -s $'\t'
+  waf_print_rules "$out" WebACL
 }
 
 waf_assoc() {
@@ -217,87 +285,131 @@ waf_cf() {
   echo "WebACLId: $wid"
 }
 
-# JSON array of all IP set summaries (paginated list-ip-sets)
-# $1 = scope: CLOUDFRONT (region us-east-1) | REGIONAL (current region)
-waf_list_all_ipsets_json() {
-  local scope="${1:-CLOUDFRONT}"
-  local -a args=(wafv2 list-ip-sets --scope "$scope")
+waf_ipset_show() {
+  local q="${1:-}"; shift || true
+  waf_parse_opts "ipset show" 0 1 "$@"
+  local scope="$opt_scope"
+  local name id out resolved
+  resolved="$(waf_resolve_name_id ipset "$scope" "$q")" || exit 1
+  IFS=$'\t' read -r name id <<<"$resolved"
+
+  local -a args=(wafv2 get-ip-set --scope "$scope" --name "$name" --id "$id")
   [[ "$scope" == "CLOUDFRONT" ]] && args+=(--region "$REGION")
-  local marker="" all='[]'
-  local resp part
-  while true; do
-    if [[ -z "$marker" ]]; then
-      resp="$(aws "${args[@]}" --output json)"
-    else
-      resp="$(aws "${args[@]}" --next-marker "$marker" --output json)"
-    fi
-    part="$(echo "$resp" | jq '[.IPSets[]?]')"
-    all="$(jq -n --argjson a "$all" --argjson b "$part" '$a + $b')"
-    marker="$(echo "$resp" | jq -r '.NextMarker // empty')"
-    [[ -z "$marker" ]] && break
-  done
-  echo "$all"
-}
+  out="$(aws "${args[@]}" --output json 2>/dev/null)" || {
+    echo "not found: $q" >&2
+    return 1
+  }
 
-waf_ipset_ls() {
-  local scope="CLOUDFRONT"
-  local csv=0
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --scope)
-        [[ -n "${2:-}" ]] || { echo "waf ipset ls: --scope requires a value" >&2; exit 1; }
-        scope="$2"; shift 2 ;;
-      --scope=*)
-        scope="${1#--scope=}"; shift ;;
-      --csv)
-        csv=1; shift ;;
-      *)
-        echo "waf ipset ls: unknown option: $1" >&2; exit 1 ;;
-    esac
-  done
-  case "$scope" in
-    CLOUDFRONT|REGIONAL) ;;
-    *) echo "waf ipset ls: invalid scope: $scope (CLOUDFRONT|REGIONAL)" >&2; exit 1 ;;
-  esac
+  echo "$out" | jq -r '
+    .IPSet as $s |
+    "Name: \($s.Name)",
+    "Id: \($s.Id)",
+    "ARN: \($s.ARN)",
+    "IPAddressVersion: \($s.IPAddressVersion // "-")",
+    (if ($s.Description // "") != "" then "Description: \($s.Description)" else empty end)
+  '
 
-  local all n
-  all="$(waf_list_all_ipsets_json "$scope")"
-  n="$(echo "$all" | jq 'length')"
+  local n
+  n="$(echo "$out" | jq '.IPSet.Addresses // [] | length')"
   if [[ "$n" -eq 0 ]]; then
-    echo "(no IP sets)"
+    echo "Addresses: (none)"
     return 0
   fi
-  if [[ "$csv" -eq 1 ]]; then
-    echo "Name,Id,ARN"
-    echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | tr '\t' ','
-  else
-    echo -e "Name\tId\tARN"
-    echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | column -t -s $'\t'
-  fi
+  echo "Addresses ($n):"
+  echo "$out" | jq -r '.IPSet.Addresses[]?'
+}
+
+waf_rulegroup_show() {
+  local q="${1:-}"; shift || true
+  waf_parse_opts "rulegroup show" 0 1 "$@"
+  local scope="$opt_scope"
+  local name id out resolved
+  resolved="$(waf_resolve_name_id rulegroup "$scope" "$q")" || exit 1
+  IFS=$'\t' read -r name id <<<"$resolved"
+
+  local -a args=(wafv2 get-rule-group --scope "$scope" --name "$name" --id "$id")
+  [[ "$scope" == "CLOUDFRONT" ]] && args+=(--region "$REGION")
+  out="$(aws "${args[@]}" --output json 2>/dev/null)" || {
+    echo "not found: $q" >&2
+    return 1
+  }
+
+  echo "$out" | jq -r '
+    .RuleGroup as $g |
+    "Name: \($g.Name)",
+    "Id: \($g.Id)",
+    "ARN: \($g.ARN)",
+    (if $g.Capacity != null then "Capacity: \($g.Capacity)" else empty end),
+    (if ($g.Description // "") != "" then "Description: \($g.Description)" else empty end),
+    (
+      ($g.VisibilityConfig // {}) | .MetricName // "" |
+      if . != "" then "VisibilityConfig (metrics): \(.)" else empty end
+    ),
+    ""
+  '
+
+  waf_print_rules "$out" RuleGroup
 }
 
 case "$sub" in
-  ls|list)
-    waf_ls
+  webacl)
+    wc="${1:-}"; shift || true
+    case "$wc" in
+      ls|list)
+        waf_parse_opts "webacl ls" 1 0 "$@"
+        waf_ls webacl "$SCOPE" "$opt_csv"
+        ;;
+      show)
+        waf_webacl_show "$@"
+        ;;
+      *)
+        echo "webacl commands:"
+        echo "  ls [--csv]                Web ACL 一覧（Name / Id / ARN）"
+        echo "  show <名前|Id|ARN>        Web ACL の詳細表示"
+        ;;
+    esac
     ;;
-  show)
-    waf_show "${1:-}"
+  ipset)
+    ic="${1:-}"; shift || true
+    case "$ic" in
+      ls|list)
+        waf_parse_opts "ipset ls" 1 1 "$@"
+        waf_ls ipset "$opt_scope" "$opt_csv"
+        ;;
+      show)
+        waf_ipset_show "$@"
+        ;;
+      *)
+        echo "ipset commands:"
+        echo "  ls [--scope CLOUDFRONT|REGIONAL] [--csv]   IP set 一覧（Name / Id / ARN）"
+        echo "  show <名前|Id|ARN> [--scope CLOUDFRONT|REGIONAL]"
+        echo "                            IP set の詳細表示（IP アドレス一覧など）"
+        ;;
+    esac
+    ;;
+  rulegroup)
+    rc="${1:-}"; shift || true
+    case "$rc" in
+      ls|list)
+        waf_parse_opts "rulegroup ls" 1 1 "$@"
+        waf_ls rulegroup "$opt_scope" "$opt_csv"
+        ;;
+      show)
+        waf_rulegroup_show "$@"
+        ;;
+      *)
+        echo "rulegroup commands:"
+        echo "  ls [--scope CLOUDFRONT|REGIONAL] [--csv]   Rule group 一覧（Name / Id / ARN）"
+        echo "  show <名前|Id|ARN> [--scope CLOUDFRONT|REGIONAL]"
+        echo "                            Rule group の詳細表示（ルール・Capacity など）"
+        ;;
+    esac
     ;;
   assoc)
     waf_assoc "${1:-}"
     ;;
   cf)
     waf_cf "${1:-}"
-    ;;
-  ipset)
-    ic="${1:-}"; shift || true
-    case "$ic" in
-      ls|list) waf_ipset_ls "$@" ;;
-      *)
-        echo "ipset commands:"
-        echo "  ls [--scope CLOUDFRONT|REGIONAL] [--csv]   IP set 一覧（Name / Id / ARN）"
-        ;;
-    esac
     ;;
   help|--help|-h|"")
     usage
