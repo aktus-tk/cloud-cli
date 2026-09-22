@@ -212,11 +212,25 @@ awst eks update-kubeconfig NAME     # kubeconfig を更新
 awst eks update-kubeconfig NAME --dry-run  # kubeconfig を標準出力に表示
 ```
 
+#### S3
+
+```bash
+awst s3 ls                      # バケット一覧
+awst s3 ls --csv                # CSV 形式
+awst s3 policy BUCKET           # バケットポリシー（読みやすい形式）
+awst s3 policy BUCKET --json    # バケットポリシー（JSON 全文）
+```
+
+`policy` はポリシー未設定の場合 `No bucket policy: BUCKET` を表示します。
+
 #### その他
 
 ```bash
 awst lightsail ls        # Lightsail インスタンス一覧
 awst waf ls              # WAF WebACL 一覧
+awst waf show my-waf     # WebACL 詳細（名前 / Id / ARN いずれか）
+awst waf ipset ls        # IP set 一覧（既定 scope CLOUDFRONT, us-east-1）
+awst waf ipset ls --scope REGIONAL   # リージョナル IP set 一覧（現在のリージョン）
 awst sg ls               # セキュリティグループ一覧
 awst acm ls              # 証明書一覧
 ```

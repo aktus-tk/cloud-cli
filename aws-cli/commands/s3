@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst s3 <command> [args]
+
+Amazon Simple Storage Service
+
+commands:
+  ls [--csv]                    list buckets
+  policy <bucket> [--json]      show bucket policy
+
+examples:
+  awst s3 ls
+  awst s3 ls --csv
+  awst s3 policy my-bucket
+  awst s3 policy my-bucket --json
+EOF
+}
+
+s3_ls_csv() {
+  echo "Name,CreationDate"
+  aws s3api list-buckets --output json | jq -r '
+    .Buckets[]? | [.Name, .CreationDate] | @tsv
+  ' | tr '\t' ','
+}
+
+s3_policy() {
+  local bucket=""
+  local fmt="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        fmt="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$bucket" ]]; then
+          bucket="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$bucket" ]]; then
+    echo "usage: awst s3 policy <bucket> [--json]" >&2
+    exit 1
+  fi
+
+  local raw
+  if ! raw="$(aws s3api get-bucket-policy --bucket "$bucket" --output json 2>&1)"; then
+    if grep -q "NoSuchBucketPolicy" <<<"$raw"; then
+      echo "No bucket policy: $bucket"
+      return 0
+    fi
+    echo "$raw" >&2
+    return 1
+  fi
+
+  local policy
+  policy="$(jq -r '.Policy' <<<"$raw")"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq . <<<"$policy"
+    return 0
+  fi
+
+  jq -r --arg bucket "$bucket" '
+    def aslist: if type == "array" then join(", ") else tostring end;
+    def principal:
+      if type == "string" then .
+      elif type == "object" then
+        to_entries | map("\(.key)=\(.value | aslist)") | join(" ")
+      else tostring end;
+    (.Statement // [] | if type == "array" then . else [.] end) as $stmts |
+    [
+      "Bucket: \($bucket)",
+      "Version: \(.Version // "-")",
+      "Statements: \($stmts | length)",
+      ""
+    ] | .[],
+    ($stmts | to_entries[] |
+      "Statement \(.key + 1):",
+      (if .value.Sid then "  Sid: \(.value.Sid)" else empty end),
+      "  Effect: \(.value.Effect)",
+      (if .value.Principal then "  Principal: \(.value.Principal | principal)" else empty end),
+      (if .value.NotPrincipal then "  NotPrincipal: \(.value.NotPrincipal | principal)" else empty end),
+      (if .value.Action then "  Action: \(.value.Action | aslist)" else empty end),
+      (if .value.NotAction then "  NotAction: \(.value.NotAction | aslist)" else empty end),
+      (if .value.Resource then "  Resource: \(.value.Resource | aslist)" else empty end),
+      (if .value.NotResource then "  NotResource: \(.value.NotResource | aslist)" else empty end),
+      (if .value.Condition then
+        "  Condition:",
+        (.value.Condition | to_entries[] |
+          "    \(.key): \(.value | to_entries | map("\(.key)=\(.value | aslist)") | join(", "))")
+      else empty end),
+      ""
+    )
+  ' <<<"$policy"
+}
+
+case "$sub" in
+  ls|list)
+    csv=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --csv) csv=1; shift ;;
+        *) shift ;;
+      esac
+    done
+    if [[ "$csv" -eq 1 ]]; then
+      s3_ls_csv
+    else
+      s3_ls_csv | column -s, -t
+    fi
+    ;;
+  policy|bucket-policy)
+    s3_policy "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown s3 command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

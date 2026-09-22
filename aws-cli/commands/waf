@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# CloudFront (GLOBAL) WAFv2 only — region us-east-1, scope CLOUDFRONT
+# Web ACLs: CloudFront (GLOBAL) WAFv2 — region us-east-1, scope CLOUDFRONT
+# IP sets:  scope CLOUDFRONT (default, us-east-1) or REGIONAL (current region)
 set -euo pipefail
 
 REGION="us-east-1"
@@ -9,21 +10,36 @@ sub="${1:-}"
 shift || true
 
 usage() {
-  cat <<EOF
-usage: awst waf {ls|show|assoc|cf}
+  cat <<'EOF'
+usage: awst waf <サブコマンド> [引数]
 
-CloudFront Web ACLs (WAFv2) in us-east-1 only.
+CloudFront 用 WAFv2 の Web ACL（us-east-1, scope CLOUDFRONT）と IP set を調べます（読み取り専用）。
 
-  ls                  list Web ACLs: Name, Id, ARN
-  show <name|id>      Web ACL detail (default action, rules, metrics)
-  assoc <web-acl-arn> CloudFront distributions using this Web ACL
-  cf <distribution-id>  WebACLId on that distribution (or no WAF)
+サブコマンド:
+  ls                        Web ACL 一覧（Name / Id / ARN）
+  show <名前|Id|ARN>        Web ACL の詳細（既定アクション・ルール・メトリクス）
+                            ARN は awst waf cf の出力をそのまま渡せる
+  assoc <WebACL の ARN>     その Web ACL を使っている CloudFront ディストリビューション
+  cf <ディストリビューションId>
+                            そのディストリビューションに付いている WebACLId を表示
+                            （未設定なら "No WAF attached"）
+  ipset ls [--scope SCOPE] [--csv]
+                            IP set 一覧（Name / Id / ARN）
 
-examples:
+オプション:
+  --scope SCOPE   ipset ls の対象スコープ
+                  CLOUDFRONT（既定, us-east-1） | REGIONAL（現在のリージョン）
+  --csv           ipset ls を CSV 形式で出力
+
+使用例:
   awst waf ls
   awst waf show my-waf
-  awst waf assoc arn:aws:wafv2:us-east-1:123456789012:global/webacl/...
+  awst waf show arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
   awst waf cf E123ABC456
+  awst waf assoc arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  awst waf ipset ls
+  awst waf ipset ls --scope REGIONAL
+  awst --region ap-northeast-1 waf ipset ls --scope REGIONAL
 EOF
 }
 
@@ -47,15 +63,19 @@ waf_list_all_summaries_json() {
 }
 
 # stdout: name<TAB>id; stderr + exit 1 if not found
+# 引数は Web ACL の 名前 / Id / ARN のいずれか
 waf_resolve_name_id() {
   local q="${1:-}"
   if [[ -z "$q" ]]; then
-    echo "Usage: awst waf show <name|id>" >&2
+    echo "Usage: awst waf show <name|id|arn>" >&2
     exit 1
   fi
+  # ARN は末尾セグメントが Id（.../webacl/<name>/<id>）
+  local qid="$q"
+  [[ "$q" == arn:* ]] && qid="${q##*/}"
   local all row
   all="$(waf_list_all_summaries_json)"
-  row="$(echo "$all" | jq -c --arg q "$q" '.[] | select(.Id == $q)' | head -n1)"
+  row="$(echo "$all" | jq -c --arg q "$qid" '.[] | select(.Id == $q)' | head -n1)"
   if [[ -z "$row" ]]; then
     row="$(echo "$all" | jq -c --arg q "$q" '.[] | select(.Name == $q)' | head -n1)"
   fi
@@ -197,6 +217,65 @@ waf_cf() {
   echo "WebACLId: $wid"
 }
 
+# JSON array of all IP set summaries (paginated list-ip-sets)
+# $1 = scope: CLOUDFRONT (region us-east-1) | REGIONAL (current region)
+waf_list_all_ipsets_json() {
+  local scope="${1:-CLOUDFRONT}"
+  local -a args=(wafv2 list-ip-sets --scope "$scope")
+  [[ "$scope" == "CLOUDFRONT" ]] && args+=(--region "$REGION")
+  local marker="" all='[]'
+  local resp part
+  while true; do
+    if [[ -z "$marker" ]]; then
+      resp="$(aws "${args[@]}" --output json)"
+    else
+      resp="$(aws "${args[@]}" --next-marker "$marker" --output json)"
+    fi
+    part="$(echo "$resp" | jq '[.IPSets[]?]')"
+    all="$(jq -n --argjson a "$all" --argjson b "$part" '$a + $b')"
+    marker="$(echo "$resp" | jq -r '.NextMarker // empty')"
+    [[ -z "$marker" ]] && break
+  done
+  echo "$all"
+}
+
+waf_ipset_ls() {
+  local scope="CLOUDFRONT"
+  local csv=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --scope)
+        [[ -n "${2:-}" ]] || { echo "waf ipset ls: --scope requires a value" >&2; exit 1; }
+        scope="$2"; shift 2 ;;
+      --scope=*)
+        scope="${1#--scope=}"; shift ;;
+      --csv)
+        csv=1; shift ;;
+      *)
+        echo "waf ipset ls: unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  case "$scope" in
+    CLOUDFRONT|REGIONAL) ;;
+    *) echo "waf ipset ls: invalid scope: $scope (CLOUDFRONT|REGIONAL)" >&2; exit 1 ;;
+  esac
+
+  local all n
+  all="$(waf_list_all_ipsets_json "$scope")"
+  n="$(echo "$all" | jq 'length')"
+  if [[ "$n" -eq 0 ]]; then
+    echo "(no IP sets)"
+    return 0
+  fi
+  if [[ "$csv" -eq 1 ]]; then
+    echo "Name,Id,ARN"
+    echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | tr '\t' ','
+  else
+    echo -e "Name\tId\tARN"
+    echo "$all" | jq -r '.[] | [.Name, .Id, .ARN] | @tsv' | column -t -s $'\t'
+  fi
+}
+
 case "$sub" in
   ls|list)
     waf_ls
@@ -209,6 +288,16 @@ case "$sub" in
     ;;
   cf)
     waf_cf "${1:-}"
+    ;;
+  ipset)
+    ic="${1:-}"; shift || true
+    case "$ic" in
+      ls|list) waf_ipset_ls "$@" ;;
+      *)
+        echo "ipset のサブコマンド:"
+        echo "  ls [--scope CLOUDFRONT|REGIONAL] [--csv]   IP set 一覧（Name / Id / ARN）"
+        ;;
+    esac
     ;;
   help|--help|-h|"")
     usage
