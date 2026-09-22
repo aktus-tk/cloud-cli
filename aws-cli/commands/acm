@@ -49,14 +49,14 @@ usage() {
 usage: awst acm <command> [options]
 
 global options (any order with other flags / ARNs):
-  --region <name>     ACM API region (e.g. us-east-1 for CloudFront)
+  --region <name>     ACM API のリージョン（例: CloudFront 用は us-east-1）
 
 commands:
-  ls, list [--csv]              list certificates (table or CSV)
-  describe, show <arn>          full certificate JSON (pretty-printed via jq)
-  summary <arn>                 main fields + domain validation (readable)
-  tags <arn>                    list-tags-for-certificate
-  help                          show this help
+  ls, list [--csv]              証明書一覧（表または CSV）
+  describe, show <arn>          証明書の全 JSON（jq で整形して表示）
+  summary <arn>                 主要項目＋ドメイン検証の状況（人が読む形式）
+  tags <arn>                    証明書のタグ一覧（list-tags-for-certificate）
+  help                          このヘルプを表示
 
 examples:
   awst acm ls

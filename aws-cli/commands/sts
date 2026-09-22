@@ -8,12 +8,12 @@ usage() {
   cat <<EOF
 usage: awst sts <command> [args]
 
-AWS Security Token Service
+AWS Security Token Service（読み取り専用）。呼び出し元 ID と認可エラーメッセージの確認。
 
 commands:
-  whoami [--json]              current caller identity (account, ARN, user id)
-  context [--json]             profile, region, and caller identity
-  decode <encoded-message>     decode an encoded authorization failure message
+  whoami [--json]              現在の呼び出し元 ID（アカウント / ARN / ユーザー ID）
+  context [--json]             プロファイル・リージョンと呼び出し元 ID
+  decode <encoded-message>     エンコードされた認可失敗メッセージをデコード
 
 examples:
   awst sts whoami

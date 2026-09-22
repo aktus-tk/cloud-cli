@@ -48,9 +48,9 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "sa (service-account) commands:"
-    echo "  ls              list service accounts (table format)"
-    echo "  ls --csv        list service accounts (CSV format)"
-    echo "  show EMAIL      show detailed service account information"
+    echo "  ls              サービスアカウント一覧（テーブル形式）"
+    echo "  ls --csv        サービスアカウント一覧（CSV 形式）"
+    echo "  show EMAIL      サービスアカウントの詳細を表示"
     ;;
   *)
     echo "unknown command: $cmd" >&2

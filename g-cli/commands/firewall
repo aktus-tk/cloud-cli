@@ -80,9 +80,9 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "firewall commands:"
-    echo "  ls              list firewall rules (table format)"
-    echo "  ls --csv        list firewall rules (CSV format)"
-    echo "  show RULE_NAME  show detailed rule configuration"
+    echo "  ls              ファイアウォールルール一覧（テーブル形式）"
+    echo "  ls --csv        ファイアウォールルール一覧（CSV 形式）"
+    echo "  show RULE_NAME  ルールの詳細設定を表示"
     ;;
   *)
     echo "unknown command: $cmd" >&2

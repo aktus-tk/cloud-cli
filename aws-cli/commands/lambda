@@ -8,13 +8,13 @@ usage() {
   cat <<EOF
 usage: awst lambda <command> [args]
 
-AWS Lambda
+AWS Lambda（読み取り専用）。関数・エイリアス・イベントソースマッピングの一覧と詳細。
 
 commands:
-  function ls [--csv]                 list functions
-  function show <name> [--json]       function details
-  alias ls <name> [--csv]             list aliases for a function
-  event ls <name> [--csv]             list event source mappings
+  function ls [--csv]                 関数一覧
+  function show <name> [--json]       関数の詳細（設定・コード・エイリアス・イベントソース）
+  alias ls <name> [--csv]             関数のエイリアス一覧
+  event ls <name> [--csv]             イベントソースマッピング一覧
 
 examples:
   awst lambda function ls
@@ -220,8 +220,8 @@ case "$sub" in
         ;;
       *)
         echo "function commands:"
-        echo "  ls [--csv]           list functions"
-        echo "  show <name> [--json] function details"
+        echo "  ls [--csv]           関数一覧"
+        echo "  show <name> [--json] 関数の詳細"
         ;;
     esac
     ;;
@@ -239,7 +239,7 @@ case "$sub" in
         ;;
       *)
         echo "alias commands:"
-        echo "  ls <function-name> [--csv]   list aliases"
+        echo "  ls <function-name> [--csv]   エイリアス一覧"
         ;;
     esac
     ;;
@@ -257,7 +257,7 @@ case "$sub" in
         ;;
       *)
         echo "event commands:"
-        echo "  ls <function-name> [--csv]   list event source mappings"
+        echo "  ls <function-name> [--csv]   イベントソースマッピング一覧"
         ;;
     esac
     ;;

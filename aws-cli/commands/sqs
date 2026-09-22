@@ -8,11 +8,11 @@ usage() {
   cat <<EOF
 usage: awst sqs <command> [args]
 
-Amazon Simple Queue Service
+Amazon Simple Queue Service（読み取り専用）。キューの一覧と属性の表示。
 
 commands:
-  queue ls [--csv] [--prefix PREFIX]   list queues
-  queue show <name|url> [--json]       queue details and attributes
+  queue ls [--csv] [--prefix PREFIX]   キュー一覧
+  queue show <name|url> [--json]       キューの詳細と属性
 
 examples:
   awst sqs queue ls
@@ -184,8 +184,8 @@ case "$sub" in
         ;;
       *)
         echo "queue commands:"
-        echo "  ls [--csv] [--prefix PREFIX]   list queues"
-        echo "  show <name|url> [--json]       queue details"
+        echo "  ls [--csv] [--prefix PREFIX]   キュー一覧"
+        echo "  show <name|url> [--json]       キューの詳細"
         ;;
     esac
     ;;

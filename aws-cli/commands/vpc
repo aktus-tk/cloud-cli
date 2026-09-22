@@ -8,14 +8,14 @@ usage() {
   cat <<EOF
 usage: awst vpc <command> [args]
 
-VPC / subnet / route table visibility
+VPC / サブネット / ルートテーブルの参照（読み取り専用）。
 
 commands:
-  ls [--csv]                         list VPCs
-  show <vpc-id|name>                 VPC details
-  subnets [vpc-id|name] [--csv]      list subnets (all VPCs if omitted)
-  subnet <subnet-id|name>            subnet details
-  routes [vpc-id|name] [--csv]       route tables and routes (all VPCs if omitted)
+  ls [--csv]                         VPC 一覧
+  show <vpc-id|name>                 VPC の詳細
+  subnets [vpc-id|name] [--csv]      サブネット一覧（省略時は全 VPC）
+  subnet <subnet-id|name>            サブネットの詳細
+  routes [vpc-id|name] [--csv]       ルートテーブルとルート（省略時は全 VPC）
 
 examples:
   awst vpc ls

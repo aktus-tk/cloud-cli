@@ -8,15 +8,15 @@ usage() {
   cat <<EOF
 usage: awst alb <command> [args]
 
-flow visibility (ELBv2 / ALB)
+ELBv2 / ALB の通信経路の可視化（読み取り専用）
 
 commands:
-  ls                           list ALBs (Name, DNS, Scheme, VpcId, SecurityGroups)
-  listener <alb-name>          listeners: Port, Protocol, DefaultActions, Certificates
-  tg <alb-name>                target groups attached to ALB
-  health <tg-name>             target health for target group name
-  rule <listener-arn>          describe rules for listener
-  help                         this help
+  ls                           ALB 一覧（Name / DNS / Scheme / VpcId / SecurityGroups）
+  listener <alb-name>          リスナー（Port / Protocol / DefaultActions / Certificates）
+  tg <alb-name>                ALB に紐づくターゲットグループ
+  health <tg-name>             ターゲットグループ名を指定してターゲットのヘルス状態
+  rule <listener-arn>          リスナーのルール一覧（describe-rules）
+  help                         このヘルプを表示
 
 examples:
   awst alb ls

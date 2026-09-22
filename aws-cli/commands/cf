@@ -8,14 +8,14 @@ usage() {
   cat <<EOF
 usage: awst cf <command> [args]
 
-read-only CloudFront inspection
+CloudFront の調査（読み取り専用）
 
 commands:
-  ls                    distributions: Id, DomainName, Status, Aliases (count), OriginName
-  domain <id>           alternate domain names (CNAMEs)
-  origin <id>           origins: Id, Domain, Path, Protocol (custom policy or S3)
-  behavior <id>         default cache behavior + cache behaviors
-  help                  this help
+  ls                    ディストリビューション一覧（Id / DomainName / Status / Aliases 件数 / OriginName）
+  domain <id>           代替ドメイン名（CNAME）
+  origin <id>           オリジン一覧（Id / Domain / Path / Protocol。カスタムポリシーまたは S3）
+  behavior <id>         デフォルトキャッシュビヘイビア＋キャッシュビヘイビア
+  help                  このヘルプを表示
 
 examples:
   awst cf ls

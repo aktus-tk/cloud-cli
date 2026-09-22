@@ -348,12 +348,12 @@ usage() {
 usage: awst r53 <command> [options]
 
 commands:
-  zones                                  list all hosted zones
-  records <zone-name>                    list resource records for a zone
-  create <zone> <name> <type> <value> [ttl]   create a new record
-  update <zone> <name> <type> <value> [ttl]   update/create a record (upsert)
-  delete <zone> <name> <type>            delete a record
-  help                                   show this help
+  zones                                  ホストゾーン一覧
+  records <zone-name>                    ゾーンのリソースレコード一覧
+  create <zone> <name> <type> <value> [ttl]   レコードを新規作成
+  update <zone> <name> <type> <value> [ttl]   レコードを更新（なければ作成 / upsert）
+  delete <zone> <name> <type>            レコードを削除
+  help                                   このヘルプを表示
 
 examples:
   awst r53 zones

@@ -11,10 +11,10 @@ usage: awst ecr <command> [args]
 Amazon Elastic Container Registry
 
 commands:
-  repo ls [--csv]                    list repositories
-  repo show <name> [--json]          repository details
-  image ls <repo> [--csv]            list images in repository
-  image show <repo> <tag|digest> [--json]  image details
+  repo ls [--csv]                    リポジトリ一覧
+  repo show <name> [--json]          リポジトリの詳細
+  image ls <repo> [--csv]            リポジトリ内のイメージ一覧
+  image show <repo> <tag|digest> [--json]  イメージの詳細
 
 examples:
   awst ecr repo ls
@@ -209,8 +209,8 @@ case "$sub" in
         ;;
       *)
         echo "repository commands:"
-        echo "  ls [--csv]           list repositories"
-        echo "  show <name> [--json] repository details"
+        echo "  ls [--csv]           リポジトリ一覧"
+        echo "  show <name> [--json] リポジトリの詳細"
         ;;
     esac
     ;;
@@ -231,8 +231,8 @@ case "$sub" in
         ;;
       *)
         echo "image commands:"
-        echo "  ls <repo> [--csv]                list images"
-        echo "  show <repo> <tag|digest> [--json] image details"
+        echo "  ls <repo> [--csv]                イメージ一覧"
+        echo "  show <repo> <tag|digest> [--json] イメージの詳細"
         ;;
     esac
     ;;

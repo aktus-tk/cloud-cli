@@ -11,13 +11,13 @@ usage: awst eventbridge <command> [args]
 Amazon EventBridge (aws events)
 
 commands:
-  rule ls [--csv] [--bus NAME] [--prefix PREFIX]   list rules
-  rule show <name> [--bus NAME] [--json]           rule details and targets
-  bus ls [--csv]                                   list event buses
-  bus show <name> [--json]                         event bus details
+  rule ls [--csv] [--bus NAME] [--prefix PREFIX]   ルール一覧
+  rule show <name> [--bus NAME] [--json]           ルールの詳細とターゲット
+  bus ls [--csv]                                   イベントバス一覧
+  bus show <name> [--json]                         イベントバスの詳細
 
 options:
-  --bus NAME        event bus name (default: default)
+  --bus NAME        イベントバス名（default: default）
 
 examples:
   awst eventbridge rule ls

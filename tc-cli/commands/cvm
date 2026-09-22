@@ -88,12 +88,12 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "cvm commands:"
-    echo "  ls         list instances (DescribeInstances)"
-    echo "  ls --csv   CSV output"
-    echo "  types      list available instance types (DescribeInstanceTypeConfigs)"
-    echo "  types --csv CSV output"
-    echo "  start NAME start instance (by instance-name or tag Name)"
-    echo "  stop NAME  stop instance"
+    echo "  ls         インスタンス一覧 (DescribeInstances)"
+    echo "  ls --csv   CSV 出力"
+    echo "  types      利用可能なインスタンスタイプ一覧 (DescribeInstanceTypeConfigs)"
+    echo "  types --csv CSV 出力"
+    echo "  start NAME インスタンス起動 (instance-name またはタグ Name で指定)"
+    echo "  stop NAME  インスタンス停止"
     ;;
   *)
     echo "unknown: $cmd" >&2

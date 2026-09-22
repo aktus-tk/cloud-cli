@@ -9,15 +9,15 @@ usage() {
 usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
        tcclit vpc sg show <sg-id|name>
 
-ls lists security groups (sg-id, sg-name).
-With --detail, prints each security group as a block (same layout as
-awst sg ls --detail): a metadata row (Region/GroupName/GroupId/VpcId/Description/Tags)
-followed by Inbound / Outbound rule tables (Dir, Proto, Ports, Action, Source|Destination).
-show prints inbound/outbound rules for one security group (readable table).
+ls はセキュリティグループ一覧（sg-id, sg-name）を表示する。
+--detail を付けると SG ごとにブロック表示する（awst sg ls --detail と同じレイアウト）:
+メタデータ行 (Region/GroupName/GroupId/VpcId/Description/Tags) の後に
+Inbound / Outbound のルール表 (Dir, Proto, Ports, Action, Source|Destination) が続く。
+show は 1 つの SG のインバウンド / アウトバウンドルールを表示する（人が読む表形式）。
 
 options (ls --detail):
-  --cidr CIDR       only rules whose CidrBlock contains this IP or prefix (e.g. 18.180.232.11)
-  --ingress-only    omit egress rules (default: ingress + egress)
+  --cidr CIDR       CidrBlock が指定 IP またはプレフィックスを含むルールだけを表示 (例: 18.180.232.11)
+  --ingress-only    egress ルールを省略 (default: ingress + egress)
 
 examples:
   tcclit vpc sg ls

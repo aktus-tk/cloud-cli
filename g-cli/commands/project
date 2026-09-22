@@ -36,11 +36,11 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "project commands:"
-    echo "  describe [PROJECT]   gcloud projects describe (default: CLOUDSDK_CORE_PROJECT)"
+    echo "  describe [PROJECT]   gcloud projects describe（既定: CLOUDSDK_CORE_PROJECT）"
     echo "  list                 gcloud projects list"
     echo ""
-    echo "note: projects describe/list need the Cloud Resource Manager API"
-    echo "      (cloudresourcemanager.googleapis.com) enabled and IAM permission."
+    echo "note: projects describe/list には Cloud Resource Manager API"
+    echo "      (cloudresourcemanager.googleapis.com) の有効化と IAM 権限が必要。"
     ;;
   *)
     echo "unknown command: $cmd" >&2

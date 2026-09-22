@@ -12,11 +12,11 @@ usage: awst cloudwatch <command> [args]
 Amazon CloudWatch (aws cloudwatch / aws logs)
 
 commands:
-  alarm ls [--csv] [--prefix PREFIX] [--state STATE]   list alarms
-  alarm show <name> [--json]                           alarm details
-  log ls [--csv] [--prefix PREFIX]                     list log groups
-  log show <name> [--json]                             log group details
-  stream ls <log-group> [--csv]                        list log streams
+  alarm ls [--csv] [--prefix PREFIX] [--state STATE]   アラーム一覧
+  alarm show <name> [--json]                           アラームの詳細
+  log ls [--csv] [--prefix PREFIX]                     ロググループ一覧
+  log show <name> [--json]                             ロググループの詳細
+  stream ls <log-group> [--csv]                        ログストリーム一覧
 
 abbreviations:
   alarm  -> al, a

@@ -15,7 +15,7 @@ usage: awst waf <サブコマンド> [引数]
 
 CloudFront 用 WAFv2 の Web ACL（us-east-1, scope CLOUDFRONT）と IP set を調べます（読み取り専用）。
 
-サブコマンド:
+commands:
   ls                        Web ACL 一覧（Name / Id / ARN）
   show <名前|Id|ARN>        Web ACL の詳細（既定アクション・ルール・メトリクス）
                             ARN は awst waf cf の出力をそのまま渡せる
@@ -26,12 +26,12 @@ CloudFront 用 WAFv2 の Web ACL（us-east-1, scope CLOUDFRONT）と IP set を�
   ipset ls [--scope SCOPE] [--csv]
                             IP set 一覧（Name / Id / ARN）
 
-オプション:
+options:
   --scope SCOPE   ipset ls の対象スコープ
                   CLOUDFRONT（既定, us-east-1） | REGIONAL（現在のリージョン）
   --csv           ipset ls を CSV 形式で出力
 
-使用例:
+examples:
   awst waf ls
   awst waf show my-waf
   awst waf show arn:aws:wafv2:us-east-1:123456789012:global/webacl/my-waf/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -294,7 +294,7 @@ case "$sub" in
     case "$ic" in
       ls|list) waf_ipset_ls "$@" ;;
       *)
-        echo "ipset のサブコマンド:"
+        echo "ipset commands:"
         echo "  ls [--scope CLOUDFRONT|REGIONAL] [--csv]   IP set 一覧（Name / Id / ARN）"
         ;;
     esac

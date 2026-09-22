@@ -362,23 +362,23 @@ case "$cmd" in
         ;;
       *)
         echo "launch template commands:"
-        echo "  lt ls [--csv]              list launch templates"
-        echo "  lt show NAME [--version N] [--json]  show launch template details"
-        echo "  lt versions NAME [--csv]   list all versions"
+        echo "  lt ls [--csv]              起動テンプレート一覧"
+        echo "  lt show NAME [--version N] [--json]  起動テンプレートの詳細"
+        echo "  lt versions NAME [--csv]   全バージョン一覧"
         ;;
     esac
   ;;
 
   *)
     echo "ec2 commands:"
-    echo "  ls         list instances"
-    echo "  ls --csv   list instances as csv"
+    echo "  ls         インスタンス一覧"
+    echo "  ls --csv   インスタンス一覧（CSV）"
     echo "  show INSTANCE_ID"
-    echo "  types [TYPE...] [--x86_64|--arm64] [--csv]  list instance types"
+    echo "  types [TYPE...] [--x86_64|--arm64] [--csv]  インスタンスタイプ一覧"
     echo "  ssh NAME"
     echo "  start NAME"
     echo "  stop NAME"
     echo "  sg_rules"
-    echo "  lt         launch template commands (lt ls, lt show, lt versions)"
+    echo "  lt         起動テンプレート関連（lt ls / lt show / lt versions）"
   ;;
 esac

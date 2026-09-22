@@ -11,10 +11,10 @@ usage: awst elasticache <command> [args]
 Amazon ElastiCache (Redis)
 
 commands:
-  redis ls [--csv]                 list Redis replication groups
-  redis show <id> [--json]         replication group details
-  cluster ls [--csv]               list Redis cache clusters (node level)
-  cluster show <id> [--json]       cache cluster details
+  redis ls [--csv]                 Redis レプリケーショングループ一覧
+  redis show <id> [--json]         レプリケーショングループの詳細
+  cluster ls [--csv]               Redis キャッシュクラスタ一覧（ノード単位）
+  cluster show <id> [--json]       キャッシュクラスタの詳細
 
 examples:
   awst elasticache redis ls
@@ -297,8 +297,8 @@ case "$sub" in
         ;;
       *)
         echo "redis commands:"
-        echo "  ls [--csv]           list replication groups"
-        echo "  show <id> [--json]   replication group details"
+        echo "  ls [--csv]           レプリケーショングループ一覧"
+        echo "  show <id> [--json]   レプリケーショングループの詳細"
         ;;
     esac
     ;;
@@ -318,8 +318,8 @@ case "$sub" in
         ;;
       *)
         echo "cluster commands:"
-        echo "  ls [--csv]           list cache clusters"
-        echo "  show <id> [--json]   cache cluster details"
+        echo "  ls [--csv]           キャッシュクラスタ一覧"
+        echo "  show <id> [--json]   キャッシュクラスタの詳細"
         ;;
     esac
     ;;

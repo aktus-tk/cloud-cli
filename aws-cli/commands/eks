@@ -281,17 +281,17 @@ case "$cmd" in
     ;;
   *)
     echo "eks commands:"
-    echo "  list-clusters                    list EKS clusters"
-    echo "  list-clusters --csv              list EKS clusters as csv"
-    echo "  list-addons [CLUSTER_NAME]       list EKS addons with versions (all clusters if not specified)"
-    echo "  list-addons [CLUSTER_NAME] --csv list EKS addons as csv"
-    echo "  addon-versions ADDON K8S_VERSION list available addon versions (describe-addon-versions)"
+    echo "  list-clusters                    EKS クラスタ一覧"
+    echo "  list-clusters --csv              EKS クラスタ一覧（CSV）"
+    echo "  list-addons [CLUSTER_NAME]       EKS アドオンとバージョン一覧（未指定なら全クラスタ）"
+    echo "  list-addons [CLUSTER_NAME] --csv EKS アドオン一覧（CSV）"
+    echo "  addon-versions ADDON K8S_VERSION 利用可能なアドオンのバージョン一覧（describe-addon-versions）"
     echo "  addon-versions --addon-name NAME --kubernetes-version VERSION [--csv]"
     echo "  describe-cluster CLUSTER [--json]"
     echo "  describe-cluster --name CLUSTER [--json]"
     echo "  describe-nodegroup CLUSTER NODEGROUP [--json]"
     echo "  describe-nodegroup --cluster-name CLUSTER --nodegroup-name NODEGROUP [--json]"
-    echo "  update-kubeconfig NAME           update kubeconfig for cluster"
-    echo "  update-kubeconfig NAME --dry-run output kubeconfig to stdout"
+    echo "  update-kubeconfig NAME           クラスタの kubeconfig を更新"
+    echo "  update-kubeconfig NAME --dry-run kubeconfig を標準出力に出力"
     ;;
 esac

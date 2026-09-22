@@ -8,15 +8,15 @@ usage() {
   cat <<EOF
 usage: tcclit cam <command> [args]
 
-identity and access management (Tencent Cloud CAM)
+Tencent Cloud CAM（Identity and Access Management）。アカウント・ポリシー・サブユーザーの参照。
 
 commands:
-  me [--json]                         current caller identity and attached policies
-  account [--json]                    account summary and AppId
-  policy ls [--csv]                   customer managed policies
-  policy show <policy-id> [--json]    policy details
-  user ls [--csv]                     sub-users
-  user show <name> [--json]           user details and attached policies
+  me [--json]                         現在の呼び出し元 ID とアタッチ済みポリシー
+  account [--json]                    アカウント概要と AppId
+  policy ls [--csv]                   カスタマー管理ポリシー一覧
+  policy show <policy-id> [--json]    ポリシー詳細
+  user ls [--csv]                     サブユーザー一覧
+  user show <name> [--json]           ユーザー詳細とアタッチ済みポリシー
 
 examples:
   tcclit cam me
@@ -341,8 +341,8 @@ case "$sub" in
         ;;
       *)
         echo "policy commands:"
-        echo "  ls [--csv]              list customer managed policies"
-        echo "  show <policy-id>        policy details"
+        echo "  ls [--csv]              カスタマー管理ポリシー一覧"
+        echo "  show <policy-id>        ポリシー詳細"
         ;;
     esac
     ;;
@@ -361,8 +361,8 @@ case "$sub" in
         ;;
       *)
         echo "user commands:"
-        echo "  ls [--csv]              list sub-users"
-        echo "  show <name> [--json]    user details and policies"
+        echo "  ls [--csv]              サブユーザー一覧"
+        echo "  show <name> [--json]    ユーザー詳細とアタッチ済みポリシー"
         ;;
     esac
     ;;

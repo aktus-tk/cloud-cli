@@ -84,11 +84,11 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "dnspod commands (Tencent Cloud DNSPod):"
-    echo "  ls              list domains (DescribeDomainList)"
-    echo "  ls --csv        CSV output"
-    echo "  show DOMAIN     domain details (DescribeDomain)"
-    echo "  records DOMAIN  list DNS records (DescribeRecordList)"
-    echo "  records DOMAIN --csv  CSV output"
+    echo "  ls              ドメイン一覧 (DescribeDomainList)"
+    echo "  ls --csv        CSV 出力"
+    echo "  show DOMAIN     ドメイン詳細 (DescribeDomain)"
+    echo "  records DOMAIN  DNS レコード一覧 (DescribeRecordList)"
+    echo "  records DOMAIN --csv  CSV 出力"
     echo
     echo "Examples:"
     echo "  tcclit dnspod ls"

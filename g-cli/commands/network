@@ -114,11 +114,11 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "network commands:"
-    echo "  ls                list VPC networks (subnetMode / routingMode)"
+    echo "  ls                VPC ネットワーク一覧（subnetMode / routingMode）"
     echo "  subnets           gcloud compute networks subnets list"
-    echo "  routes            list routes (simplified: name, network, dest, nextHop, priority)"
+    echo "  routes            ルート一覧（簡略化: name, network, dest, nextHop, priority）"
     echo "  routers           gcloud compute routers list"
-    echo "  nat [ROUTER]      Cloud NAT config. ROUTER 省略時は全 router の NAT を表示"
+    echo "  nat [ROUTER]      Cloud NAT 設定。ROUTER 省略時は全 router の NAT を表示"
     echo "                    (get-nat-mapping-info が権限で不可の場合は routers/describe で判断)"
     ;;
   *)

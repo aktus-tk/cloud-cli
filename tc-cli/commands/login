@@ -5,9 +5,9 @@ usage() {
   cat <<EOF
 usage: tcclit login [profile]
 
-Run tc-assume login for a profile.
+指定したプロファイルで tc-assume login を実行する。
 
-If profile is omitted, uses TENCENTCLOUD_PROFILE.
+プロファイルを省略した場合は TENCENTCLOUD_PROFILE を使用する。
 EOF
 }
 

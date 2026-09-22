@@ -151,14 +151,16 @@ case "$sub" in
     cat <<EOF
 awst lightsail <subcommand>
 
+Lightsail インスタンスの作成・削除・一覧と SSH 接続。
+
 subcommands:
-  create <name>   create instance + static ip
-  delete <name>   delete instance (static IP は残す)
-  get             list bundles
-  blue            list blueprints
-  ls              list instances
-  ssh <name>      ssh into instance
-  default-key     print default SSH key name and ~/.ssh/<name>.pem (AWST_KEY, default sshpub)
+  create <name>   インスタンス作成 + 静的 IP 割り当て（対話確認あり）
+  delete <name>   インスタンス削除（静的 IP は残す。実行予定コマンドを表示するのみ）
+  get             バンドル（料金プラン）一覧
+  blue            ブループリント（OS イメージ）一覧
+  ls              インスタンス一覧
+  ssh <name>      インスタンスへ SSH 接続
+  default-key     既定の SSH キー名と ~/.ssh/<name>.pem を表示（AWST_KEY, default sshpub）
 EOF
     ;;
 

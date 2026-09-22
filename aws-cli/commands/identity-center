@@ -11,15 +11,15 @@ usage: awst identity-center <command> [args]
 AWS IAM Identity Center (aws sso-admin / identitystore)
 
 commands:
-  instance ls [--csv]                              list Identity Center instances
-  permission-set ls [--instance ARN] [--csv]     list permission sets
+  instance ls [--csv]                              Identity Center インスタンス一覧
+  permission-set ls [--instance ARN] [--csv]       許可セット一覧
   permission-set show <name|arn> [--instance ARN] [--json]
-  assignment ls --account ID [--instance ARN] [--csv]  account assignments
-  user ls [--instance ARN] [--csv]               list users
-  group ls [--instance ARN] [--csv]                list groups
+  assignment ls --account ID [--instance ARN] [--csv]  アカウントへの割り当て一覧
+  user ls [--instance ARN] [--csv]                 ユーザー一覧
+  group ls [--instance ARN] [--csv]                グループ一覧
 
 options:
-  --instance ARN    Identity Center instance ARN (default: first instance)
+  --instance ARN    Identity Center インスタンス ARN（default: 最初のインスタンス）
 
 examples:
   awst identity-center instance ls

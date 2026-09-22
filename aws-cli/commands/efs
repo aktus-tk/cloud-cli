@@ -11,9 +11,9 @@ usage: awst efs <command> [options pass-through to aws efs ...]
 EFS: usage/容量はファイルシステム単位。アクセスポイント単位の容量は出せない。
 
 commands:
-  ap, aps, access-points   list access points (file system, access point, root path)
-  fs, filesystems          list file systems (id, name, state, size bytes)
-  help                     this help
+  ap, aps, access-points   アクセスポイント一覧（ファイルシステム / アクセスポイント / ルートパス）
+  fs, filesystems          ファイルシステム一覧（id / 名前 / 状態 / サイズ）
+  help                     このヘルプを表示
 
 examples:
   awst efs ap

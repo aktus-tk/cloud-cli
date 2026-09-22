@@ -8,28 +8,28 @@ usage() {
   cat <<EOF
 usage: awst iam <command> [args]
 
-identity and access management
+アイデンティティとアクセス管理（IAM）
 
 commands:
-  policy ls [--csv]                       all customer managed policies
-  policy show <arn-or-name>               policy details (versions, document)
-  policy create <policy-name> <json-file|--document JSON>  create customer managed policy
-  role ls [--csv]                         all roles
-  role show <role-name>                   role details (trust policy, attached policies, inline policies)
-  role policies <role-name>               policies attached to role
-  role inline-policies <role-name>        inline policies attached to role
-  user ls [--csv]                         all users
-  user show <user-name>                   user details (attached policies)
-  user policies <user-name>               policies attached to user
-  user create <user-name> [--policy ARN|NAME]...  create user and attach policies
-  user attach-policy <user-name> <policy-arn|name>  attach policy to user
-  access-key show <user-name>             list access keys for user
-  access-key create <user-name>           create access key for user
-  instance-profile ls [--csv]             all instance profiles
-  instance-profile show <name>            instance profile details (roles)
-  instance-profile for-role <role-name>   instance profiles for role
-  oidc ls [--csv]                         all OIDC identity providers
-  oidc show <arn-or-url> [--json]         OIDC provider details
+  policy ls [--csv]                       カスタマー管理ポリシー一覧
+  policy show <arn-or-name>               ポリシーの詳細（バージョン・ポリシードキュメント）
+  policy create <policy-name> <json-file|--document JSON>  カスタマー管理ポリシーを作成
+  role ls [--csv]                         ロール一覧
+  role show <role-name>                   ロールの詳細（信頼ポリシー・アタッチ済みポリシー・インラインポリシー）
+  role policies <role-name>               ロールにアタッチされているポリシー
+  role inline-policies <role-name>        ロールにアタッチされているインラインポリシー
+  user ls [--csv]                         ユーザー一覧
+  user show <user-name>                   ユーザーの詳細（アタッチ済みポリシー）
+  user policies <user-name>               ユーザーにアタッチされているポリシー
+  user create <user-name> [--policy ARN|NAME]...  ユーザーを作成しポリシーをアタッチ
+  user attach-policy <user-name> <policy-arn|name>  ユーザーにポリシーをアタッチ
+  access-key show <user-name>             ユーザーのアクセスキー一覧
+  access-key create <user-name>           ユーザーのアクセスキーを作成
+  instance-profile ls [--csv]             インスタンスプロファイル一覧
+  instance-profile show <name>            インスタンスプロファイルの詳細（ロール）
+  instance-profile for-role <role-name>   ロールに対応するインスタンスプロファイル
+  oidc ls [--csv]                         OIDC アイデンティティプロバイダー一覧
+  oidc show <arn-or-url> [--json]         OIDC プロバイダーの詳細
 
 examples:
   awst iam policy ls

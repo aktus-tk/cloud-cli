@@ -5,6 +5,8 @@ usage () {
 cat <<EOF
 usage: awst search <query>
 
+AWS Resource Explorer 2 でリソースを検索する（読み取り専用）。結果は Service / ResourceType / Region / Arn。
+
 examples:
   awst search services
   awst search all

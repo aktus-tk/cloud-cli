@@ -8,17 +8,18 @@ usage() {
   cat <<EOF
 usage: gcloudt iam <command> [args]
 
-identity and access management (GCP)
+GCP の IAM（Identity and Access Management）参照用。読み取り専用。
+ロール、サービスアカウント、プロジェクト IAM ポリシーを一覧・詳細表示する。
 
 commands:
-  role ls [--csv] [--custom]              predefined roles (default) or project custom roles
-  role show <role-id> [--json]            role details (permissions)
-  sa ls [--csv]                           service accounts
-  sa show <email>                         service account details + keys
-  sa keys <email>                         service account keys
-  policy show [PROJECT] [--json]          project IAM policy
-  policy bindings [PROJECT] [--csv]       flatten role → member bindings
-  policy members <role> [PROJECT]         members granted a role on the project
+  role ls [--csv] [--custom]              定義済みロール（既定）またはプロジェクトのカスタムロール一覧
+  role show <role-id> [--json]            ロール詳細（権限一覧）
+  sa ls [--csv]                           サービスアカウント一覧
+  sa show <email>                         サービスアカウント詳細 + 鍵一覧
+  sa keys <email>                         サービスアカウントの鍵一覧
+  policy show [PROJECT] [--json]          プロジェクトの IAM ポリシー
+  policy bindings [PROJECT] [--csv]       ロール → メンバーの対応を平坦化して出力
+  policy members <role> [PROJECT]         プロジェクトでロールが付与されているメンバー
 
 examples:
   gcloudt iam role ls
@@ -253,8 +254,8 @@ case "$sub" in
         ;;
       *)
         echo "role commands:"
-        echo "  ls [--csv] [--custom]   list predefined or project custom roles"
-        echo "  show ROLE [--json]      role details and permissions"
+        echo "  ls [--csv] [--custom]   定義済みロールまたはプロジェクトのカスタムロール一覧"
+        echo "  show ROLE [--json]      ロール詳細と権限一覧"
         ;;
     esac
     ;;
@@ -276,9 +277,9 @@ case "$sub" in
         ;;
       *)
         echo "sa commands:"
-        echo "  ls [--csv]     list service accounts"
-        echo "  show EMAIL     service account details + keys"
-        echo "  keys EMAIL     list keys"
+        echo "  ls [--csv]     サービスアカウント一覧"
+        echo "  show EMAIL     サービスアカウント詳細 + 鍵一覧"
+        echo "  keys EMAIL     鍵一覧"
         ;;
     esac
     ;;
@@ -308,9 +309,9 @@ case "$sub" in
         ;;
       *)
         echo "policy commands:"
-        echo "  show [PROJECT] [--json]       project IAM policy"
-        echo "  bindings [PROJECT] [--csv]    flatten role → member"
-        echo "  members ROLE [PROJECT]        members for a role"
+        echo "  show [PROJECT] [--json]      プロジェクトの IAM ポリシー"
+        echo "  bindings [PROJECT] [--csv]   ロール → メンバーの対応を平坦化して出力"
+        echo "  members ROLE [PROJECT]       指定ロールのメンバー一覧"
         ;;
     esac
     ;;

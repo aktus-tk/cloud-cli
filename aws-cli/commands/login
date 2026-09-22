@@ -5,9 +5,9 @@ usage() {
   cat <<EOF
 usage: awst login
 
-Run SAML login via saml2aws (--skip-prompt).
+saml2aws で SAML ログインを実行する（--skip-prompt）。
 
-Requires saml2aws on PATH.
+saml2aws が PATH 上に必要。
 EOF
 }
 

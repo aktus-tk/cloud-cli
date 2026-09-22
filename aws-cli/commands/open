@@ -7,17 +7,17 @@ usage() {
   cat <<EOF
 usage: awst open [SERVICE | --servicemap]
 
-Open AWS Management Console via granted (assume).
+granted（assume）経由で AWS マネジメントコンソールを開く。
 
-Requires AWS_PROFILE (e.g. direnv .envrc in project directory).
+AWS_PROFILE が必要（例: プロジェクトディレクトリの direnv .envrc で設定）。
 
 examples:
-  awst open .                        open default console
-  awst open s3                       open S3 console
-  awst open acm --region us-east-1   open ACM console (us-east-1)
-  awst open --servicemap             list available services
+  awst open .                        デフォルトのコンソールを開く
+  awst open s3                       S3 コンソールを開く
+  awst open acm --region us-east-1   ACM コンソール（us-east-1）を開く
+  awst open --servicemap             利用可能なサービス一覧を表示
 
-See README_granted.md for granted setup.
+granted のセットアップは README_granted.md を参照。
 EOF
 }
 

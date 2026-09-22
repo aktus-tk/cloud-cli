@@ -292,14 +292,14 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "cos commands (Tencent Cloud Object Storage):"
-    echo "  ls [--csv]                         list buckets"
-    echo "  ls BUCKET [--csv]                  list objects in bucket"
-    echo "  create BUCKET [--region REGION]    create bucket (AppId appended if omitted)"
-    echo "  delete BUCKET [--region REGION]    delete empty bucket"
+    echo "  ls [--csv]                        バケット一覧"
+    echo "  ls BUCKET [--csv]                 バケット内のオブジェクト一覧"
+    echo "  create BUCKET [--region REGION]   バケット作成 (AppId は省略時に自動付与)"
+    echo "  delete BUCKET [--region REGION]   空のバケットを削除"
     echo
-    echo "Uses TENCENTCLOUD_SECRET_ID/SECRET_KEY, or ~/.tccli/\$TCCLI_PROFILE.credential"
-    echo "Region defaults to TENCENTCLOUD_REGION or tccli configure region."
-    echo "Bucket names are <name>-<appid>; AppId is fetched via cam GetUserAppId."
+    echo "認証: TENCENTCLOUD_SECRET_ID/SECRET_KEY、または ~/.tccli/\$TCCLI_PROFILE.credential を使用する"
+    echo "リージョン: TENCENTCLOUD_REGION、または tccli configure の region が既定"
+    echo "バケット名は <name>-<appid> 形式。AppId は cam GetUserAppId で取得する"
     echo
     echo "Examples:"
     echo "  tcclit cos ls"

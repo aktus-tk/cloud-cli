@@ -8,11 +8,11 @@ usage() {
   cat <<EOF
 usage: awst s3 <command> [args]
 
-Amazon Simple Storage Service
+Amazon Simple Storage Service（読み取り専用）。バケット一覧とバケットポリシーの表示。
 
 commands:
-  ls [--csv]                    list buckets
-  policy <bucket> [--json]      show bucket policy
+  ls [--csv]                    バケット一覧
+  policy <bucket> [--json]      バケットポリシーを表示（--json は生 JSON、既定は要約）
 
 examples:
   awst s3 ls

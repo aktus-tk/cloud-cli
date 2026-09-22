@@ -8,18 +8,18 @@ usage() {
   cat <<EOF
 usage: awst sg <command> [args]
 
-permission visibility (security groups)
+EC2 セキュリティグループの調査（読み取り専用）。
 
 commands:
-  ls                                    all security groups (summary)
-  show <sg-id|group-name>               inbound + outbound rules (readable)
-  ec2 <instance-name-or-id>             instance → security groups
-  alb <alb-name>                        ALB → security group IDs
-  check <src> <dst> <port>              logical path check (TCP)
-  check alb <alb-name> <dst> <port>     src = that ALB's security groups
+  ls                                    SG 一覧（概要）
+  show <sg-id|group-name>               1 つの SG の Inbound / Outbound ルール（人が読む形式）
+  ec2 <instance-name-or-id>             インスタンスにアタッチされている SG
+  alb <alb-name>                        ALB にアタッチされている SG ID
+  check <src> <dst> <port>              src → dst の TCP が論理的に通るか
+  check alb <alb-name> <dst> <port>     src = その ALB の SG 群
 
-Logical check: needs egress on some src SG toward dst set (peer SG or 0.0.0.0/0)
-and ingress on some dst SG from src set (peer SG or 0.0.0.0/0) for TCP port.
+論理チェックの意味: src 側 SG のいずれかに dst（SG または 0.0.0.0/0）向けの egress があり、
+かつ dst 側 SG のいずれかに src（SG または 0.0.0.0/0）からの ingress があること（TCP ポート）。
 
 examples:
   awst sg ls

@@ -8,15 +8,15 @@ usage() {
   cat <<EOF
 usage: awst ssm <command> [args]
 
-AWS Systems Manager
+AWS Systems Manager（読み取り専用）。マネージドインスタンス・パラメータストア・セッションの参照。
 
 commands:
-  instance ls [--csv]                   managed instances (SSM inventory)
-  instance show <id|ec2-name> [--json]  SSM details for an instance
-  param ls [--csv] [--path PREFIX]      parameter store listing
-  param show <name>                     parameter metadata (no value)
-  param get <name> [--decrypt] [--json] get parameter value
-  session ls [--csv]                    active SSM sessions
+  instance ls [--csv]                   マネージドインスタンス一覧（SSM インベントリ）
+  instance show <id|ec2-name> [--json]  インスタンスの SSM 詳細
+  param ls [--csv] [--path PREFIX]      パラメータストアの一覧
+  param show <name>                     パラメータのメタデータ（値は含まない）
+  param get <name> [--decrypt] [--json] パラメータの値を取得
+  session ls [--csv]                    アクティブな SSM セッション一覧
 
 examples:
   awst ssm instance ls
@@ -263,8 +263,8 @@ case "$sub" in
         ;;
       *)
         echo "instance commands:"
-        echo "  ls [--csv]                   list managed instances"
-        echo "  show <id|ec2-name> [--json]  show SSM instance details"
+        echo "  ls [--csv]                   マネージドインスタンス一覧"
+        echo "  show <id|ec2-name> [--json]  インスタンスの SSM 詳細"
         ;;
     esac
     ;;
@@ -296,9 +296,9 @@ case "$sub" in
         ;;
       *)
         echo "parameter commands:"
-        echo "  ls [--csv] [--path PREFIX]       list parameters"
-        echo "  show <name>                      parameter metadata"
-        echo "  get <name> [--decrypt] [--json]  get parameter value"
+        echo "  ls [--csv] [--path PREFIX]       パラメータ一覧"
+        echo "  show <name>                      パラメータのメタデータ"
+        echo "  get <name> [--decrypt] [--json]  パラメータの値を取得"
         ;;
     esac
     ;;
@@ -315,7 +315,7 @@ case "$sub" in
         ;;
       *)
         echo "session commands:"
-        echo "  ls [--csv]   list active SSM sessions"
+        echo "  ls [--csv]   アクティブな SSM セッション一覧"
         ;;
     esac
     ;;

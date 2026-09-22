@@ -11,9 +11,9 @@ usage: awst dynamodb <command> [args]
 Amazon DynamoDB
 
 commands:
-  table ls [--csv]                 list tables
-  table show <name> [--json]       table details (keys, indexes, TTL, PITR)
-  backup ls [--table NAME] [--csv] list backups
+  table ls [--csv]                 テーブル一覧
+  table show <name> [--json]       テーブルの詳細（キー・インデックス・TTL・PITR）
+  backup ls [--table NAME] [--csv] バックアップ一覧
 
 examples:
   awst dynamodb table ls
@@ -229,8 +229,8 @@ case "$sub" in
         ;;
       *)
         echo "table commands:"
-        echo "  ls [--csv]           list tables"
-        echo "  show <name> [--json] table details"
+        echo "  ls [--csv]           テーブル一覧"
+        echo "  show <name> [--json] テーブルの詳細"
         ;;
     esac
     ;;
@@ -255,7 +255,7 @@ case "$sub" in
         ;;
       *)
         echo "backup commands:"
-        echo "  ls [--table NAME] [--csv]   list backups"
+        echo "  ls [--table NAME] [--csv]   バックアップ一覧"
         ;;
     esac
     ;;

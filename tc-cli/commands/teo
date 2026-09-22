@@ -75,8 +75,8 @@ case "$cmd" in
     echo "  zones                              ゾーン一覧 (DescribeZones)"
     echo "  acceleration-domains ZONE_ID       加速ドメイン一覧 (DescribeAccelerationDomains)"
     echo "  acceleration-domains ZONE_ID --csv CSV 出力"
-    echo "  describe-rules ZONE_ID             DescribeRules (--ZoneId ZONE_ID; extra args forwarded)"
-    echo "  describe-rules --ZoneId ZONE_ID [...]  pass flags directly to tccli teo DescribeRules"
+    echo "  describe-rules ZONE_ID             DescribeRules (--ZoneId ZONE_ID を付与、残りの引数はそのまま転送)"
+    echo "  describe-rules --ZoneId ZONE_ID [...]  フラグを tccli teo DescribeRules にそのまま渡す"
     echo
     echo "Examples:"
     echo "  tcclit teo zones"
