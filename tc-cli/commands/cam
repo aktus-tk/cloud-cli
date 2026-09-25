@@ -272,9 +272,16 @@ policy_show() {
     "UpdateTime: \(.UpdateTime // "-")",
     "PresetAlias: \(.PresetAlias // "-")",
     "",
-    "=== PolicyDocument ===",
-    (.PolicyDocument // "{}")
+    "=== PolicyDocument ==="
   '
+
+  local doc
+  doc="$(echo "$json" | jq -r '.PolicyDocument // empty')"
+  if [[ -n "$doc" ]] && echo "$doc" | jq -e . >/dev/null 2>&1; then
+    echo "$doc" | jq .
+  else
+    echo "${doc:-{}}"
+  fi
 }
 
 user_ls_csv() {
