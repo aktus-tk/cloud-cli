@@ -334,6 +334,8 @@ tcclit login PROFILE            # tc-assume login PROFILE
 tcclit cam me          # 現在の caller とロール/ポリシー
 tcclit cam account     # アカウントサマリ + AppId
 tcclit cam policy ls   # カスタムポリシー一覧
+tcclit cam policy show 123456        # ポリシー詳細（ID 指定）
+tcclit cam policy show RHEMS-WORKER  # ポリシー詳細（名前指定）
 tcclit cam user ls     # サブユーザー一覧
 ```
 

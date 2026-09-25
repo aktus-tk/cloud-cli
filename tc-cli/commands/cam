@@ -14,7 +14,7 @@ commands:
   me [--json]                         現在の呼び出し元 ID とアタッチ済みポリシー
   account [--json]                    アカウント概要と AppId
   policy ls [--csv]                   カスタマー管理ポリシー一覧
-  policy show <policy-id> [--json]    ポリシー詳細
+  policy show <id-or-name> [--json]   ポリシー詳細（ID または名前）
   user ls [--csv]                     サブユーザー一覧
   user show <name> [--json]           ユーザー詳細とアタッチ済みポリシー
 
@@ -23,6 +23,7 @@ examples:
   tcclit cam account
   tcclit cam policy ls
   tcclit cam policy show 123456
+  tcclit cam policy show RHEMS-WORKER
   tcclit cam user ls
   tcclit cam user show alice
 EOF
@@ -210,21 +211,48 @@ policy_ls_csv() {
       ] | @csv'
 }
 
+policy_resolve_id() {
+  local name="$1" page=1 rp=200 resp total found
+  while :; do
+    resp="$(tccli cam ListPolicies --Scope All --Keyword "$name" --Rp "$rp" --Page "$page" --output json)"
+    found="$(echo "$resp" | jq -r --arg n "$name" '[ (.List // [])[] | select(.PolicyName == $n) | .PolicyId ] | first // empty')"
+    if [[ -n "$found" ]]; then
+      printf '%s' "$found"
+      return 0
+    fi
+    total="$(echo "$resp" | jq -r '.TotalNum // 0')"
+    if (( page * rp >= total )); then
+      break
+    fi
+    page=$((page + 1))
+  done
+  return 1
+}
+
 policy_show() {
-  local policy_id="" fmt="table"
+  local spec="" fmt="table"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) fmt="json"; shift ;;
       *)
-        [[ -z "$policy_id" ]] && policy_id="$1"
+        [[ -z "$spec" ]] && spec="$1"
         shift
         ;;
     esac
   done
 
-  if [[ -z "$policy_id" ]]; then
-    echo "usage: tcclit cam policy show <policy-id> [--json]" >&2
+  if [[ -z "$spec" ]]; then
+    echo "usage: tcclit cam policy show <policy-id|policy-name> [--json]" >&2
     exit 1
+  fi
+
+  local policy_id="$spec"
+  if [[ ! "$spec" =~ ^[0-9]+$ ]]; then
+    policy_id="$(policy_resolve_id "$spec" || true)"
+    if [[ -z "$policy_id" ]]; then
+      echo "policy not found: $spec" >&2
+      exit 1
+    fi
   fi
 
   local json
@@ -342,7 +370,7 @@ case "$sub" in
       *)
         echo "policy commands:"
         echo "  ls [--csv]              カスタマー管理ポリシー一覧"
-        echo "  show <policy-id>        ポリシー詳細"
+        echo "  show <id-or-name>       ポリシー詳細（ID または名前）"
         ;;
     esac
     ;;
