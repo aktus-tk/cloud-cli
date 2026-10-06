@@ -165,9 +165,11 @@ awst autoscaling group show my-asg               # 設定・インスタンス�
 awst autoscaling group show my-asg --json        # JSON 形式
 awst autoscaling group instances my-asg          # ASG に属するインスタンス一覧
 awst autoscaling group activity my-asg --max 10  # スケーリングアクティビティ
+awst autoscaling launch-configuration ls         # 起動設定（LaunchConfiguration）一覧
+awst autoscaling launch-configuration show my-lc # 起動設定の詳細（UserData をデコードして表示）
 ```
 
-`as` は `autoscaling` のエイリアス（例: `awst as group show my-asg`）。
+`as` は `autoscaling`、`lc` は `launch-configuration` のエイリアス（例: `awst as group show my-asg` / `awst as lc show my-lc`）。
 
 #### Application Load Balancer (ALB)
 

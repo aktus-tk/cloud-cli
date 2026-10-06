@@ -10,6 +10,7 @@
 | lambda | function/alias/event ネスト |
 | eventbridge | ネスト + 複数 API 合成 show |
 | ec2 | lt ネスト、複雑 jq |
+| autoscaling | group/lc ネスト、複数 API 合成 show |
 | ecs | cluster/service/task-definition/container-instance/task ネスト、list→describe を分割 |
 | cf | CloudFront、association 表示 |
 | identity-center | sso-admin + identitystore |

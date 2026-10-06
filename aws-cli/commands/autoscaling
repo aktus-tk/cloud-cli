@@ -15,9 +15,12 @@ commands:
   group show <name> [--json]                 ASG の設定・インスタンス・ポリシー・refresh・activity を表示
   group instances <name> [--csv] [--json]    ASG に属するインスタンス一覧を表示
   group activity <name> [--max N] [--csv]    ASG のスケーリングアクティビティを表示
+  launch-configuration ls [--csv] [--json]   起動設定（LaunchConfiguration）一覧を表示
+  launch-configuration show <name> [--json]  起動設定の詳細を表示
 
 aliases:
   as   autoscaling と同じ（例: awst as group ls）
+  lc   launch-configuration と同じ（例: awst as lc show my-lc）
 
 examples:
   awst autoscaling group ls
@@ -26,6 +29,8 @@ examples:
   awst as group show my-asg --json
   awst as group instances my-asg --csv
   awst as group activity my-asg --max 10
+  awst as launch-configuration ls
+  awst as lc show my-launch-configuration
 EOF
 }
 
@@ -375,6 +380,156 @@ asg_group_show() {
   '
 }
 
+lc_ls_csv() {
+  echo "Name,InstanceType,ImageId,KeyName,SecurityGroups,IamInstanceProfile,CreatedTime"
+  echo "$1" | jq -r '
+    .LaunchConfigurations[]? |
+    [
+      .LaunchConfigurationName,
+      (.InstanceType // "-"),
+      (.ImageId // "-"),
+      (.KeyName // "-"),
+      ((.SecurityGroups // []) | join(";")),
+      (.IamInstanceProfile // "-"),
+      (.CreatedTime // "-")
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+lc_ls_json() {
+  echo "$1" | jq '
+    [ .LaunchConfigurations[]? | {
+        Name: .LaunchConfigurationName,
+        InstanceType: (.InstanceType // null),
+        ImageId: (.ImageId // null),
+        KeyName: (.KeyName // null),
+        SecurityGroups: (.SecurityGroups // []),
+        IamInstanceProfile: (.IamInstanceProfile // null),
+        AssociatePublicIpAddress: (.AssociatePublicIpAddress // null),
+        CreatedTime: (.CreatedTime // null)
+      } ]
+  '
+}
+
+lc_ls() {
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        echo "unknown option: $1 (awst autoscaling launch-configuration help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local -a cmd=(autoscaling describe-launch-configurations --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  case "$fmt" in
+    json) lc_ls_json "$json" ;;
+    csv) lc_ls_csv "$json" ;;
+    table) lc_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
+lc_show() {
+  local name=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst autoscaling launch-configuration show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(autoscaling describe-launch-configurations --launch-configuration-names "$name" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+  if [[ "$(echo "$json" | jq '.LaunchConfigurations | length')" == "0" ]]; then
+    echo "Launch configuration not found: $name" >&2
+    exit 1
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq '.LaunchConfigurations[0]'
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .LaunchConfigurations[0] |
+    "Name: \(.LaunchConfigurationName)",
+    "Arn: \(.LaunchConfigurationARN // "-")",
+    "ImageId: \(.ImageId // "-")",
+    "InstanceType: \(.InstanceType // "-")",
+    "KeyName: \(.KeyName // "-")",
+    "SecurityGroups: \(if (.SecurityGroups // [] | length) > 0 then (.SecurityGroups | join(", ")) else "-" end)",
+    "ClassicLinkVPCSecurityGroups: \(if (.ClassicLinkVPCSecurityGroups // [] | length) > 0 then (.ClassicLinkVPCSecurityGroups | join(", ")) else "-" end)",
+    "IamInstanceProfile: \(.IamInstanceProfile // "-")",
+    "AssociatePublicIpAddress: \(.AssociatePublicIpAddress // false)",
+    "InstanceMonitoring: \(.InstanceMonitoring.Enabled // false)",
+    "EbsOptimized: \(.EbsOptimized // false)",
+    "SpotPrice: \(.SpotPrice // "-")",
+    "PlacementTenancy: \(.PlacementTenancy // "-")",
+    "KernelId: \(.KernelId // "-")",
+    "RamdiskId: \(.RamdiskId // "-")",
+    "BlockDeviceMappings:",
+    (if (.BlockDeviceMappings // [] | length) > 0 then
+      (.BlockDeviceMappings[] |
+        "  \(.DeviceName): " +
+        (if .Ebs then
+           "EBS \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-")\(if .Ebs.SnapshotId then " snap=\(.Ebs.SnapshotId)" else "" end)\(if .Ebs.Encrypted then " encrypted" else "" end)"
+         elif .VirtualName then
+           "ephemeral \(.VirtualName)"
+         else
+           "-"
+         end))
+    else "  (none)" end),
+    "MetadataOptions:",
+    "  HttpTokens: \(.MetadataOptions.HttpTokens // "-")",
+    "  HttpEndpoint: \(.MetadataOptions.HttpEndpoint // "-")",
+    "  HttpPutResponseHopLimit: \(.MetadataOptions.HttpPutResponseHopLimit // "-")",
+    "  InstanceMetadataTags: \(.MetadataOptions.InstanceMetadataTags // "-")",
+    "CreatedTime: \(.CreatedTime // "-")"
+  '
+
+  local ud
+  ud="$(echo "$json" | jq -r '.LaunchConfigurations[0].UserData // empty')"
+  if [[ -z "$ud" ]]; then
+    echo "UserData: -"
+    return 0
+  fi
+  local decoded
+  if decoded="$(printf '%s' "$ud" | base64 -d 2>/dev/null)"; then
+    echo "UserData:"
+    printf '%s\n' "$decoded" | sed 's/^/  /'
+  else
+    echo "UserData: (base64 decode failed)"
+  fi
+}
+
 case "$sub" in
   group)
     group_cmd="${1:-}"
@@ -398,6 +553,23 @@ case "$sub" in
         echo "  show <name> [--json]                ASG の詳細を表示"
         echo "  instances <name> [--csv] [--json]   ASG のインスタンス一覧を表示"
         echo "  activity <name> [--max N] [--csv]   ASG のスケーリングアクティビティを表示"
+        ;;
+    esac
+    ;;
+  launch-configuration|lc)
+    lc_cmd="${1:-}"
+    shift || true
+    case "$lc_cmd" in
+      ls|list)
+        lc_ls "$@"
+        ;;
+      show|describe)
+        lc_show "$@"
+        ;;
+      *)
+        echo "launch-configuration commands:"
+        echo "  ls [--csv] [--json]        起動設定一覧を表示"
+        echo "  show <name> [--json]       起動設定の詳細を表示"
         ;;
     esac
     ;;
