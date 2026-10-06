@@ -289,7 +289,7 @@ lt_show() {
   (if (.LaunchTemplateData.BlockDeviceMappings // [] | length) > 0 then
     "BlockDeviceMappings:",
     (.LaunchTemplateData.BlockDeviceMappings[] |
-      "  \(.DeviceName): \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-") \(.Ebs.Encrypted // false | if . then "encrypted" else "unencrypted" end)")
+      "  \(.DeviceName): \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-") \(.Ebs.Encrypted // false | if . then "encrypted" else "unencrypted" end) deleteOnTermination=\(.Ebs.DeleteOnTermination // false)")
   else "BlockDeviceMappings: -" end),
   (if .LaunchTemplateData.UserData then
     "UserData: present",

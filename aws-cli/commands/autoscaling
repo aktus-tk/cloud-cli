@@ -500,7 +500,7 @@ lc_show() {
       (.BlockDeviceMappings[] |
         "  \(.DeviceName): " +
         (if .Ebs then
-           "EBS \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-")\(if .Ebs.SnapshotId then " snap=\(.Ebs.SnapshotId)" else "" end)\(if .Ebs.Encrypted then " encrypted" else "" end)"
+           "EBS \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-")\(if .Ebs.SnapshotId then " snap=\(.Ebs.SnapshotId)" else "" end)\(if .Ebs.Encrypted then " encrypted" else "" end) deleteOnTermination=\(.Ebs.DeleteOnTermination // false)"
          elif .VirtualName then
            "ephemeral \(.VirtualName)"
          else
