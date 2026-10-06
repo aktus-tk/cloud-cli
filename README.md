@@ -123,6 +123,7 @@ Granted のセットアップと WSL でのブラウザ起動は [README_granted
 ```bash
 awst ec2 ls              # インスタンス一覧
 awst ec2 ls --csv        # CSV 形式で出力
+awst ec2 show INSTANCE_ID  # インスタンス詳細（UserData をデコードして表示）
 awst ec2 start NAME      # インスタンスを起動
 awst ec2 stop NAME       # 実行予定コマンドのみ表示（実行しない）
 awst ec2 sg_rules NAME   # セキュリティグループルール表示

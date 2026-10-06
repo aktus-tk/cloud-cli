@@ -31,8 +31,17 @@ ec2_show() {
     exit 1
   fi
 
+  local -a describe_cmd=(ec2 describe-instances --instance-ids "$instance_id" --output json)
+  local -a userdata_cmd=(ec2 describe-instance-attribute --instance-id "$instance_id" --attribute userData --query UserData.Value --output text)
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${describe_cmd[@]}"; echo
+    printf '%q ' aws "${userdata_cmd[@]}"; echo
+    exit 0
+  fi
+
   local json
-  json="$(aws ec2 describe-instances --instance-ids "$instance_id" --output json)"
+  json="$(aws "${describe_cmd[@]}")"
 
   echo "$json" | jq -r '
     .Reservations[0].Instances[0] |
@@ -59,6 +68,21 @@ ec2_show() {
     "Tags:",
     ((.Tags // []) | sort_by(.Key)[] | "  \(.Key)=\(.Value)")
   '
+
+  local user_data
+  user_data="$(aws "${userdata_cmd[@]}" 2>/dev/null || true)"
+  if [[ -z "$user_data" || "$user_data" == "None" ]]; then
+    echo "UserData: -"
+    return 0
+  fi
+
+  local decoded
+  if decoded="$(printf '%s' "$user_data" | base64 -d 2>/dev/null)"; then
+    echo "UserData:"
+    printf '%s\n' "$decoded" | sed 's/^/  /'
+  else
+    echo "UserData: (base64 decode failed)"
+  fi
 }
 
 ec2_types_csv() {
