@@ -266,9 +266,13 @@ awst ecs task-definition ls                    # タスク定義一覧（family:
 awst ecs task-definition ls --family web --status ACTIVE
 awst ecs task-definition show web:12           # タスク定義詳細（コンテナ定義 / env / secrets / log 設定）
 awst ecs task-definition show web:12 --json
+awst ecs container-instance ls RHEMS-FileStorage-Cluster  # EC2 起動タイプのコンテナインスタンス一覧
+awst ecs container-instance ls RHEMS-FileStorage-Cluster --csv
+awst ecs container-instance show RHEMS-FileStorage-Cluster i-0598e29e871a813bd  # エージェント接続 / リソース / 属性
+awst ecs container-instance show RHEMS-FileStorage-Cluster i-0598e29e871a813bd --json
 ```
 
-`td` は `task-definition` のエイリアス（例: `awst ecs td ls`）。
+`td` は `task-definition`、`ci` は `container-instance` のエイリアス（例: `awst ecs td ls` / `awst ecs ci ls my-cluster`）。
 
 #### S3
 

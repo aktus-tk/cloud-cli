@@ -19,9 +19,14 @@ commands:
                                               タスク定義一覧を表示
   task-definition show <family[:revision]|arn> [--json]
                                               タスク定義の詳細を表示
+  container-instance ls <cluster> [--csv] [--json]
+                                              EC2 起動タイプのコンテナインスタンス一覧を表示
+  container-instance show <cluster> <container-instance> [--json]
+                                              コンテナインスタンスの詳細を表示
 
 aliases:
   td   task-definition と同じ（例: awst ecs td ls）
+  ci   container-instance と同じ（例: awst ecs ci ls my-cluster）
 
 examples:
   awst ecs cluster ls
@@ -33,6 +38,8 @@ examples:
   awst ecs task-definition ls
   awst ecs task-definition ls --family web
   awst ecs task-definition show web:12
+  awst ecs container-instance ls RHEMS-FileStorage-Cluster
+  awst ecs container-instance show RHEMS-FileStorage-Cluster i-0598e29e871a813bd
 EOF
 }
 
@@ -511,6 +518,181 @@ ecs_taskdef_show() {
   '
 }
 
+# describe-container-instances は最大 100 件ずつ。渡された ARN を分割して 1 つの JSON にまとめる。
+ecs_describe_container_instances_json() {
+  local cluster="$1"
+  shift
+  local -a arns=("$@")
+  local -a out=()
+  local i
+  for ((i = 0; i < ${#arns[@]}; i += 100)); do
+    local chunk=("${arns[@]:i:100}")
+    out+=("$(aws ecs describe-container-instances --cluster "$cluster" --container-instances "${chunk[@]}" --output json)")
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then
+    echo '{"containerInstances":[],"failures":[]}'
+    return 0
+  fi
+  printf '%s\n' "${out[@]}" | jq -s '{containerInstances: (map(.containerInstances) | add // []), failures: (map(.failures) | add // [])}'
+}
+
+ecs_ci_ls_csv() {
+  echo "EC2InstanceId,Status,Agent,AgentVersion,Running,Pending,InstanceType,CPU,Memory"
+  echo "$1" | jq -r '
+    .containerInstances[]? |
+    (([.attributes[]? | select(.name == "ecs.instance-type") | .value][0]) // "-") as $itype |
+    (([.registeredResources[]? | select(.name == "CPU") | .integerValue][0]) // "-") as $cpu |
+    (([.registeredResources[]? | select(.name == "MEMORY") | .integerValue][0]) // "-") as $mem |
+    [
+      .ec2InstanceId,
+      (.status // "-"),
+      (if .agentConnected then "connected" else "disconnected" end),
+      (.versionInfo.agentVersion // .agentVersion // "-"),
+      ((.runningTasksCount // 0) | tostring),
+      ((.pendingTasksCount // 0) | tostring),
+      ($itype | tostring),
+      ($cpu | tostring),
+      ($mem | tostring)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+ecs_ci_ls_json() {
+  echo "$1" | jq '
+    [ .containerInstances[]? | {
+        EC2InstanceId: .ec2InstanceId,
+        Status: (.status // null),
+        AgentConnected: (.agentConnected // false),
+        AgentVersion: (.versionInfo.agentVersion // .agentVersion // null),
+        RunningTasks: (.runningTasksCount // 0),
+        PendingTasks: (.pendingTasksCount // 0),
+        InstanceType: (([.attributes[]? | select(.name == "ecs.instance-type") | .value][0]) // null),
+        RegisteredCpu: (([.registeredResources[]? | select(.name == "CPU") | .integerValue][0]) // null),
+        RegisteredMemory: (([.registeredResources[]? | select(.name == "MEMORY") | .integerValue][0]) // null)
+      } ]
+  '
+}
+
+ecs_ci_ls() {
+  local cluster=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$cluster" ]]; then
+          cluster="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster" ]]; then
+    echo "usage: awst ecs container-instance ls <cluster> [--csv] [--json]" >&2
+    exit 1
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws ecs list-container-instances --cluster "$cluster" --output json; echo
+    printf '%q ' aws ecs describe-container-instances --cluster "$cluster" --container-instances '<container-instance-arns>' --output json; echo
+    exit 0
+  fi
+
+  local arns
+  arns="$(aws ecs list-container-instances --cluster "$cluster" --output json | jq -r '.containerInstanceArns[]?')"
+  local -a arr=()
+  if [[ -n "$arns" ]]; then
+    mapfile -t arr <<<"$arns"
+  fi
+
+  local json
+  json="$(ecs_describe_container_instances_json "$cluster" "${arr[@]}")"
+
+  case "$fmt" in
+    json) ecs_ci_ls_json "$json" ;;
+    csv) ecs_ci_ls_csv "$json" ;;
+    table) ecs_ci_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
+ecs_ci_show() {
+  local cluster=""
+  local instance=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$cluster" ]]; then
+          cluster="$1"
+        elif [[ -z "$instance" ]]; then
+          instance="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster" || -z "$instance" ]]; then
+    echo "usage: awst ecs container-instance show <cluster> <container-instance> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(ecs describe-container-instances --cluster "$cluster" --container-instances "$instance" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+  if [[ "$(echo "$json" | jq '.containerInstances | length')" == "0" ]]; then
+    local reason
+    reason="$(echo "$json" | jq -r '.failures[0].reason // empty')"
+    echo "ECS container instance not found: $instance${reason:+ ($reason)}" >&2
+    exit 1
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq '.containerInstances[0]'
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    def rv:
+      if .integerValue != null then (.integerValue | tostring)
+      elif .stringSetValue != null then (.stringSetValue | join(","))
+      elif .doubleValue != null then (.doubleValue | tostring)
+      else "-" end;
+    .containerInstances[0] |
+    "EC2InstanceId: \(.ec2InstanceId)",
+    "ContainerInstanceArn: \(.containerInstanceArn)",
+    "Status: \(.status // "-")",
+    "AgentConnected: \(.agentConnected // false)",
+    "AgentVersion: \(.versionInfo.agentVersion // .agentVersion // "-")",
+    "DockerVersion: \(.versionInfo.dockerVersion // "-")",
+    "ECSVersion: \(.version // "-")",
+    "CapacityProvider: \(.capacityProviderName // "-")",
+    "AvailabilityZone: \((.attributes[]? | select(.name == "ecs.availability-zone") | .value) // "-")",
+    "InstanceType: \((.attributes[]? | select(.name == "ecs.instance-type") | .value) // "-")",
+    "Running/Pending: \(.runningTasksCount // 0) / \(.pendingTasksCount // 0)",
+    "RegisteredResources:",
+    (if (.registeredResources // [] | length) > 0 then
+      (.registeredResources[] | "  \(.name)=\(rv)")
+    else "  (none)" end),
+    "RemainingResources:",
+    (if (.remainingResources // [] | length) > 0 then
+      (.remainingResources[] | "  \(.name)=\(rv)")
+    else "  (none)" end),
+    "Attributes:",
+    (if (.attributes // [] | length) > 0 then
+      (.attributes[] | "  \(.name)=\(.value // "-")")
+    else "  (none)" end)
+  '
+}
+
 case "$sub" in
   cluster)
     cluster_cmd="${1:-}"
@@ -560,6 +742,23 @@ case "$sub" in
         echo "task-definition commands:"
         echo "  ls [--family PREFIX] [--status ACTIVE|INACTIVE|DELETE] [--sort asc|desc] [--max N] [--csv] [--json]"
         echo "  show <family[:revision]|arn> [--json]"
+        ;;
+    esac
+    ;;
+  container-instance|ci)
+    ci_cmd="${1:-}"
+    shift || true
+    case "$ci_cmd" in
+      ls|list)
+        ecs_ci_ls "$@"
+        ;;
+      show|describe)
+        ecs_ci_show "$@"
+        ;;
+      *)
+        echo "container-instance commands:"
+        echo "  ls <cluster> [--csv] [--json]                      コンテナインスタンス一覧を表示"
+        echo "  show <cluster> <container-instance> [--json]       コンテナインスタンスの詳細を表示"
         ;;
     esac
     ;;
