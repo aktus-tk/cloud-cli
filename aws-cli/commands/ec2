@@ -113,7 +113,7 @@ ec2_types_csv() {
 lt_resolve() {
   local name="$1"
   if [[ -z "$name" ]]; then
-    echo "usage: awst ec2 lt <command> ..." >&2
+    echo "usage: awst ec2 launch-template <command> ..." >&2
     return 1
   fi
   if [[ "$name" =~ ^lt-[0-9a-f]+$ ]]; then
@@ -168,7 +168,7 @@ lt_show() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version)
-        version="$2"
+        version="${2:-}"
         shift 2
         ;;
       --json)
@@ -185,30 +185,40 @@ lt_show() {
   done
 
   if [[ -z "$name" ]]; then
-    echo "usage: awst ec2 lt show NAME [--version N] [--json]" >&2
+    echo "usage: awst ec2 launch-template show <id|name> [--version N|latest|default] [--json]" >&2
     exit 1
   fi
 
-  local resolved
-  resolved="$(lt_resolve "$name")" || exit 1
-  local api_args
-  api_args="$(lt_api_args "$resolved")"
+  local vsel="$version"
+  case "$vsel" in
+    ""|latest) vsel='$Latest' ;;
+    default) vsel='$Default' ;;
+  esac
+
+  local -a meta_cmd ver_cmd
+  if [[ "$name" =~ ^lt-[0-9a-f]+$ ]]; then
+    meta_cmd=(ec2 describe-launch-templates --launch-template-ids "$name" --output json)
+    ver_cmd=(ec2 describe-launch-template-versions --launch-template-id "$name" --versions "$vsel" --output json)
+  else
+    meta_cmd=(ec2 describe-launch-templates --launch-template-names "$name" --output json)
+    ver_cmd=(ec2 describe-launch-template-versions --launch-template-name "$name" --versions "$vsel" --output json)
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${meta_cmd[@]}"; echo
+    printf '%q ' aws "${ver_cmd[@]}"; echo
+    exit 0
+  fi
 
   local meta_json
-  if [[ "$resolved" =~ ^lt-[0-9a-f]+$ ]]; then
-    meta_json="$(aws ec2 describe-launch-templates --launch-template-ids "$resolved" --output json)"
-  else
-    meta_json="$(aws ec2 describe-launch-templates --launch-template-names "$resolved" --output json)"
+  meta_json="$(aws "${meta_cmd[@]}")"
+  if [[ "$(echo "$meta_json" | jq '.LaunchTemplates | length')" == "0" ]]; then
+    echo "Launch template not found: $name" >&2
+    exit 1
   fi
 
   local version_json
-  if [[ -n "$version" ]]; then
-    # shellcheck disable=SC2086
-    version_json="$(aws ec2 describe-launch-template-versions $api_args --versions "$version" --output json)"
-  else
-    # shellcheck disable=SC2086
-    version_json="$(aws ec2 describe-launch-template-versions $api_args --versions '$Latest' --output json)"
-  fi
+  version_json="$(aws "${ver_cmd[@]}")"
 
   if [[ "$fmt" == "json" ]]; then
     jq -n --argjson meta "$meta_json" --argjson versions "$version_json" \
@@ -227,7 +237,7 @@ lt_show() {
   '
 
   echo "$version_json" | jq -r '
-    .LaunchTemplateVersions[] |
+    .LaunchTemplateVersions[]? |
     "",
     "=== Version \(.VersionNumber)\(if .DefaultVersion then " (default)" else "" end) ===",
     "CreateTime: \(.CreateTime)",
@@ -236,16 +246,13 @@ lt_show() {
     "InstanceType: \(.LaunchTemplateData.InstanceType // "-")",
     "KeyName: \(.LaunchTemplateData.KeyName // "-")",
     "IamInstanceProfile: \(.LaunchTemplateData.IamInstanceProfile.Arn // .LaunchTemplateData.IamInstanceProfile.Name // "-")",
-    "SecurityGroupIds: \(
+    "SecurityGroups: \(
       (
         (.LaunchTemplateData.SecurityGroupIds // [])
-        + ((.LaunchTemplateData.SecurityGroups // []) | map(.GroupId))
+        + (.LaunchTemplateData.SecurityGroups // [])
         + ([.LaunchTemplateData.NetworkInterfaces[]?.Groups[]?])
       ) | unique | if length > 0 then join(", ") else "-" end
     )",
-    (if (.LaunchTemplateData.SecurityGroups // [] | length) > 0 then
-      "SecurityGroups: \((.LaunchTemplateData.SecurityGroups // []) | map("\(.GroupId)(\(.GroupName // "-"))") | join(", "))"
-    else empty end),
     "SubnetId: \(.LaunchTemplateData.NetworkInterfaces[0].SubnetId // .LaunchTemplateData.SubnetId // "-")",
     "VpcId: \(.LaunchTemplateData.NetworkInterfaces[0].VpcId // "-")",
     "AssociatePublicIp: \(.LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress // "-")",
@@ -259,13 +266,18 @@ lt_show() {
     "BlockDeviceMappings:",
     (.LaunchTemplateData.BlockDeviceMappings[] |
       "  \(.DeviceName): \(.Ebs.VolumeSize // "-")GB \(.Ebs.VolumeType // "-") \(.Ebs.Encrypted // false | if . then "encrypted" else "unencrypted" end)")
-  else empty end),
+  else "BlockDeviceMappings: -" end),
   (if .LaunchTemplateData.UserData then
-    "UserData:",
+    "UserData: present",
     (.LaunchTemplateData.UserData | @base64d | split("\n")[] | "  " + .)
   else
     "UserData: -"
   end),
+    "MetadataOptions:",
+    "  HttpTokens: \(.LaunchTemplateData.MetadataOptions.HttpTokens // "-")",
+    "  HttpEndpoint: \(.LaunchTemplateData.MetadataOptions.HttpEndpoint // "-")",
+    "  HttpPutResponseHopLimit: \(.LaunchTemplateData.MetadataOptions.HttpPutResponseHopLimit // "-")",
+    "  InstanceMetadataTags: \(.LaunchTemplateData.MetadataOptions.InstanceMetadataTags // "-")",
   (if (.LaunchTemplateData.TagSpecifications // [] | length) > 0 then
     "TagSpecifications:",
     (.LaunchTemplateData.TagSpecifications[] |
@@ -555,7 +567,7 @@ case "$cmd" in
    done
   ;;
 
-  lt)
+  lt|launch-template)
     lt_cmd=$1
     shift || true
     case "$lt_cmd" in
@@ -570,18 +582,25 @@ case "$cmd" in
         lt_show "$@"
         ;;
       versions)
-        if [[ "$1" == "--csv" ]]; then
-          shift || true
-          lt_versions_csv "$@"
+        csv=0
+        vargs=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --csv) csv=1; shift ;;
+            *) vargs+=("$1"); shift ;;
+          esac
+        done
+        if [[ "$csv" -eq 1 ]]; then
+          lt_versions_csv "${vargs[@]}"
         else
-          lt_versions_csv "$@" | column -s, -t
+          lt_versions_csv "${vargs[@]}" | column -s, -t
         fi
         ;;
       *)
-        echo "launch template commands:"
-        echo "  lt ls [--csv]              起動テンプレート一覧"
-        echo "  lt show NAME [--version N] [--json]  起動テンプレートの詳細"
-        echo "  lt versions NAME [--csv]   全バージョン一覧"
+        echo "launch template commands (launch-template / lt):"
+        echo "  launch-template ls [--csv]              起動テンプレート一覧を表示"
+        echo "  launch-template show NAME [--version N|latest|default] [--json]  起動テンプレートの詳細を表示"
+        echo "  launch-template versions NAME [--csv]   全バージョン一覧を表示"
         ;;
     esac
   ;;
@@ -618,7 +637,7 @@ case "$cmd" in
     echo "  start NAME"
     echo "  stop NAME"
     echo "  sg_rules"
-    echo "  lt         起動テンプレート関連（lt ls / lt show / lt versions）"
+    echo "  launch-template  起動テンプレート関連を表示（launch-template ls / show / versions、lt は alias）"
     echo "  ebs        EBS ボリューム関連（ebs ls / ebs show / ebs summary）"
   ;;
 esac
