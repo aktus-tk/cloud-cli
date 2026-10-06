@@ -274,6 +274,223 @@ lt_show() {
   '
 }
 
+ebs_ls_csv() {
+  echo "VolumeId,SizeGiB,Type,State,AZ,CreateTime,Name,AttachedInstanceId"
+  echo "$1" | jq -r '
+    [.Volumes[] | {
+      VolumeId,
+      SizeGiB: .Size,
+      Type: .VolumeType,
+      State: .State,
+      AZ: .AvailabilityZone,
+      CreateTime,
+      Name: (([.Tags[]? | select(.Key == "Name") | .Value][0]) // ""),
+      AttachedInstanceId: (.Attachments[0].InstanceId // "")
+    }]
+    | sort_by(.VolumeId)
+    | .[]
+    | [.VolumeId, (.SizeGiB | tostring), .Type, .State, .AZ, .CreateTime, .Name, .AttachedInstanceId]
+    | @tsv
+  ' | tr '\t' ','
+}
+
+ebs_ls() {
+  local state="all"
+  local output="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --state)
+        state="$2"
+        shift 2
+        ;;
+      --csv)
+        output="csv"
+        shift
+        ;;
+      --json)
+        output="json"
+        shift
+        ;;
+      *)
+        echo "unknown option: $1 (awst ec2 ebs help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  case "$state" in
+    all|available|in-use) ;;
+    *)
+      echo "--state must be available, in-use, or all: $state" >&2
+      exit 1
+      ;;
+  esac
+
+  local -a cmd=(ec2 describe-volumes --output json)
+  if [[ "$state" != "all" ]]; then
+    cmd+=(--filters "Name=status,Values=$state")
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  case "$output" in
+    json)
+      echo "$json" | jq '
+        [.Volumes[] | {
+          VolumeId,
+          SizeGiB: .Size,
+          Type: .VolumeType,
+          State: .State,
+          AZ: .AvailabilityZone,
+          CreateTime,
+          Name: (([.Tags[]? | select(.Key == "Name") | .Value][0]) // ""),
+          AttachedInstanceId: (.Attachments[0].InstanceId // "")
+        }]
+        | sort_by(.VolumeId)
+      '
+      ;;
+    csv)
+      ebs_ls_csv "$json"
+      ;;
+    table)
+      ebs_ls_csv "$json" | column -s, -t
+      ;;
+  esac
+}
+
+ebs_show() {
+  local volume_id=""
+  local output="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        output="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$volume_id" ]]; then
+          volume_id="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$volume_id" ]]; then
+    echo "usage: awst ec2 ebs show <volume-id> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(ec2 describe-volumes --volume-ids "$volume_id" --output json)
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  if [[ "$output" == "json" ]]; then
+    echo "$json" | jq '
+      .Volumes[0] | {
+        VolumeId,
+        SizeGiB: .Size,
+        Type: .VolumeType,
+        State: .State,
+        AZ: .AvailabilityZone,
+        SnapshotId: (.SnapshotId // ""),
+        CreateTime,
+        Tags: (.Tags // []),
+        Attachments: (.Attachments // [])
+      }
+    '
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .Volumes[0] |
+    "VolumeId: \(.VolumeId)",
+    "State: \(.State)",
+    "Size: \(.Size) GiB",
+    "Type: \(.VolumeType)",
+    "AvailabilityZone: \(.AvailabilityZone)",
+    "SnapshotId: \(.SnapshotId // "-")",
+    "CreateTime: \(.CreateTime)",
+    "Tags:",
+    (if (.Tags // [] | length) > 0 then
+      ((.Tags // []) | sort_by(.Key)[] | "  \(.Key)=\(.Value)")
+    else "  -" end),
+    "Attachments:",
+    (if (.Attachments // [] | length) > 0 then
+      ((.Attachments // [])[] | "  \(.InstanceId // "-"): \(.Device // "-") state=\(.State // "-")")
+    else "  -" end)
+  '
+}
+
+ebs_summary_csv() {
+  echo "Group,Key,Count,SizeGiB"
+  echo "$1" | jq -r '
+    def fmt:
+      .[] | [.Group, (.Key // "-"), (.Count | tostring), (.SizeGiB | tostring)] | @tsv;
+    (
+      (.Volumes | group_by(.State)
+        | map({Group: "State", Key: .[0].State, Count: length, SizeGiB: (map(.Size) | add)})),
+      (.Volumes | group_by(.VolumeType)
+        | map({Group: "VolumeType", Key: .[0].VolumeType, Count: length, SizeGiB: (map(.Size) | add)})),
+      (.Volumes | group_by(.AvailabilityZone)
+        | map({Group: "AZ", Key: .[0].AvailabilityZone, Count: length, SizeGiB: (map(.Size) | add)}))
+    ) | fmt
+  ' | tr '\t' ','
+}
+
+ebs_summary() {
+  local output="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv)
+        output="csv"
+        shift
+        ;;
+      *)
+        echo "unknown option: $1 (awst ec2 ebs help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local -a cmd=(ec2 describe-volumes --output json)
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  case "$output" in
+    csv)
+      ebs_summary_csv "$json"
+      ;;
+    table)
+      ebs_summary_csv "$json" | column -s, -t
+      ;;
+  esac
+}
+
 
 case "$cmd" in
   ls)
@@ -369,6 +586,28 @@ case "$cmd" in
     esac
   ;;
 
+  ebs)
+    ebs_cmd=$1
+    shift || true
+    case "$ebs_cmd" in
+      ls)
+        ebs_ls "$@"
+        ;;
+      show)
+        ebs_show "$@"
+        ;;
+      summary)
+        ebs_summary "$@"
+        ;;
+      *)
+        echo "ebs commands:"
+        echo "  ebs ls [--state available|in-use|all] [--csv] [--json]  EBS ボリューム一覧"
+        echo "  ebs show <volume-id> [--json]                          ボリューム詳細"
+        echo "  ebs summary [--csv]                                    State/Type/AZ 別の集計"
+        ;;
+    esac
+  ;;
+
   *)
     echo "ec2 commands:"
     echo "  ls         インスタンス一覧"
@@ -380,5 +619,6 @@ case "$cmd" in
     echo "  stop NAME"
     echo "  sg_rules"
     echo "  lt         起動テンプレート関連（lt ls / lt show / lt versions）"
+    echo "  ebs        EBS ボリューム関連（ebs ls / ebs show / ebs summary）"
   ;;
 esac

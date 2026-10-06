@@ -128,6 +128,20 @@ awst ec2 stop NAME       # 実行予定コマンドのみ表示（実行しな�
 awst ec2 sg_rules NAME   # セキュリティグループルール表示
 ```
 
+#### EBS ボリューム
+
+```bash
+awst ec2 ebs ls                       # EBS ボリューム一覧
+awst ec2 ebs ls --state available     # 未アタッチ（available）のみ
+awst ec2 ebs ls --state in-use        # アタッチ済みのみ
+awst ec2 ebs ls --csv                 # CSV 形式
+awst ec2 ebs ls --json                # JSON 形式
+awst ec2 ebs show vol-xxxxxxxx        # ボリューム詳細
+awst ec2 ebs show vol-xxxxxxxx --json # JSON 形式
+awst ec2 ebs summary                  # State / VolumeType / AZ 別の台数と合計容量
+awst ec2 ebs summary --csv            # CSV 形式
+```
+
 #### Application Load Balancer (ALB)
 
 ```bash
@@ -335,7 +349,7 @@ tcclit cam me          # 現在の caller とロール/ポリシー
 tcclit cam account     # アカウントサマリ + AppId
 tcclit cam policy ls   # カスタムポリシー一覧
 tcclit cam policy show 123456        # ポリシー詳細（ID 指定）
-tcclit cam policy show RHEMS-WORKER  # ポリシー詳細（名前指定）
+tcclit cam policy show WORKER        # ポリシー詳細（名前指定）
 tcclit cam user ls     # サブユーザー一覧
 ```
 
