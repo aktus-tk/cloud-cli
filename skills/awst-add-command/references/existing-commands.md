@@ -10,6 +10,7 @@
 | lambda | function/alias/event ネスト |
 | eventbridge | ネスト + 複数 API 合成 show |
 | ec2 | lt ネスト、複雑 jq |
+| ecs | cluster/service/task-definition ネスト、list→describe を 10 件ずつバッチ |
 | cf | CloudFront、association 表示 |
 | identity-center | sso-admin + identitystore |
 | dynamodb | list + per-item describe |

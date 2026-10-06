@@ -142,6 +142,32 @@ awst ec2 ebs summary                  # State / VolumeType / AZ 別の台数と�
 awst ec2 ebs summary --csv            # CSV 形式
 ```
 
+#### EC2 起動テンプレート (Launch Template)
+
+```bash
+awst ec2 launch-template ls                 # 起動テンプレート一覧
+awst ec2 launch-template ls --csv           # CSV 形式
+awst ec2 launch-template show web-lt        # 最新バージョンの主要設定（AMI / InstanceType / SG / UserData / MetadataOptions など）
+awst ec2 launch-template show web-lt --version 3   # バージョン指定（latest / default も可）
+awst ec2 launch-template show lt-0123456789abcdef0 --json  # ID 指定・JSON 形式
+awst ec2 launch-template versions web-lt    # 全バージョン一覧
+```
+
+`lt` は `launch-template` のエイリアス（例: `awst ec2 lt show web-lt`）。
+
+#### Auto Scaling Group
+
+```bash
+awst autoscaling group ls                        # ASG 一覧
+awst autoscaling group ls --csv                  # CSV 形式
+awst autoscaling group show my-asg               # 設定・インスタンス・ポリシー・refresh・activity
+awst autoscaling group show my-asg --json        # JSON 形式
+awst autoscaling group instances my-asg          # ASG に属するインスタンス一覧
+awst autoscaling group activity my-asg --max 10  # スケーリングアクティビティ
+```
+
+`as` は `autoscaling` のエイリアス（例: `awst as group show my-asg`）。
+
 #### Application Load Balancer (ALB)
 
 ```bash
@@ -225,6 +251,24 @@ awst eks list-clusters --csv        # CSV 形式
 awst eks update-kubeconfig NAME     # kubeconfig を更新
 awst eks update-kubeconfig NAME --dry-run  # kubeconfig を標準出力に表示
 ```
+
+#### ECS
+
+```bash
+awst ecs cluster ls                            # ECS クラスタ一覧
+awst ecs cluster ls --csv                      # CSV 形式
+awst ecs cluster show RHEMS-FileStorage-Cluster  # クラスタ詳細
+awst ecs service ls RHEMS-FileStorage-Cluster  # サービス一覧（launchType / capacityProviders 含む）
+awst ecs service ls RHEMS-FileStorage-Cluster --csv
+awst ecs service show RHEMS-FileStorage-Cluster my-service  # サービス詳細（deployments / LB / events）
+awst ecs service show RHEMS-FileStorage-Cluster my-service --json
+awst ecs task-definition ls                    # タスク定義一覧（family:revision）
+awst ecs task-definition ls --family web --status ACTIVE
+awst ecs task-definition show web:12           # タスク定義詳細（コンテナ定義 / env / secrets / log 設定）
+awst ecs task-definition show web:12 --json
+```
+
+`td` は `task-definition` のエイリアス（例: `awst ecs td ls`）。
 
 #### S3
 
