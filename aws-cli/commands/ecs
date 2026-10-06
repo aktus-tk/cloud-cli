@@ -1,0 +1,574 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst ecs <command> [args]
+
+Amazon ECS の参照（読み取り専用）
+
+commands:
+  cluster ls [--csv] [--json]                 ECS クラスタ一覧を表示
+  cluster show <cluster> [--json]             クラスタの詳細を表示
+  service ls <cluster> [--csv] [--json]       クラスタ内のサービス一覧を表示
+  service show <cluster> <service> [--json]   サービスの詳細を表示
+  task-definition ls [--family PREFIX] [--status ACTIVE|INACTIVE|DELETE] [--csv] [--json]
+                                              タスク定義一覧を表示
+  task-definition show <family[:revision]|arn> [--json]
+                                              タスク定義の詳細を表示
+
+aliases:
+  td   task-definition と同じ（例: awst ecs td ls）
+
+examples:
+  awst ecs cluster ls
+  awst ecs cluster show RHEMS-FileStorage-Cluster
+  awst ecs service ls RHEMS-FileStorage-Cluster
+  awst ecs service ls RHEMS-FileStorage-Cluster --csv
+  awst ecs service show RHEMS-FileStorage-Cluster my-service
+  awst ecs service show RHEMS-FileStorage-Cluster my-service --json
+  awst ecs task-definition ls
+  awst ecs task-definition ls --family web
+  awst ecs task-definition show web:12
+EOF
+}
+
+# describe-clusters は最大 100 件ずつ。渡された ARN を分割して 1 つの JSON にまとめる。
+ecs_describe_clusters_json() {
+  local -a arns=("$@")
+  local -a out=()
+  local i
+  for ((i = 0; i < ${#arns[@]}; i += 100)); do
+    local chunk=("${arns[@]:i:100}")
+    out+=("$(aws ecs describe-clusters --clusters "${chunk[@]}" --output json)")
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then
+    echo '{"clusters":[],"failures":[]}'
+    return 0
+  fi
+  printf '%s\n' "${out[@]}" | jq -s '{clusters: (map(.clusters) | add // []), failures: (map(.failures) | add // [])}'
+}
+
+# describe-services は最大 10 件ずつ。渡された ARN を分割して 1 つの JSON にまとめる。
+ecs_describe_services_json() {
+  local cluster="$1"
+  shift
+  local -a arns=("$@")
+  local -a out=()
+  local i
+  for ((i = 0; i < ${#arns[@]}; i += 10)); do
+    local chunk=("${arns[@]:i:10}")
+    out+=("$(aws ecs describe-services --cluster "$cluster" --services "${chunk[@]}" --output json)")
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then
+    echo '{"services":[],"failures":[]}'
+    return 0
+  fi
+  printf '%s\n' "${out[@]}" | jq -s '{services: (map(.services) | add // []), failures: (map(.failures) | add // [])}'
+}
+
+ecs_cluster_ls_csv() {
+  echo "Name,Status,ActiveServices,RunningTasks,PendingTasks,RegisteredInstances,CapacityProviders"
+  echo "$1" | jq -r '
+    .clusters[]? |
+    [
+      .clusterName,
+      (.status // "-"),
+      ((.activeServicesCount // 0) | tostring),
+      ((.runningTasksCount // 0) | tostring),
+      ((.pendingTasksCount // 0) | tostring),
+      ((.registeredContainerInstancesCount // 0) | tostring),
+      ((.capacityProviders // []) | join(";"))
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+ecs_cluster_ls_json() {
+  echo "$1" | jq '
+    [ .clusters[]? | {
+        Name: .clusterName,
+        Status: (.status // null),
+        ActiveServices: (.activeServicesCount // 0),
+        RunningTasks: (.runningTasksCount // 0),
+        PendingTasks: (.pendingTasksCount // 0),
+        RegisteredInstances: (.registeredContainerInstancesCount // 0),
+        CapacityProviders: (.capacityProviders // [])
+      } ]
+  '
+}
+
+ecs_cluster_ls() {
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        echo "unknown option: $1 (awst ecs cluster help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws ecs list-clusters --output json; echo
+    printf '%q ' aws ecs describe-clusters --clusters '<cluster-arns>' --output json; echo
+    exit 0
+  fi
+
+  local arns
+  arns="$(aws ecs list-clusters --output json | jq -r '.clusterArns[]?')"
+  local -a arr=()
+  if [[ -n "$arns" ]]; then
+    mapfile -t arr <<<"$arns"
+  fi
+
+  local json
+  json="$(ecs_describe_clusters_json "${arr[@]}")"
+
+  case "$fmt" in
+    json) ecs_cluster_ls_json "$json" ;;
+    csv) ecs_cluster_ls_csv "$json" ;;
+    table) ecs_cluster_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
+ecs_cluster_show() {
+  local name=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ecs cluster show <cluster> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(ecs describe-clusters --clusters "$name" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+  if [[ "$(echo "$json" | jq '.clusters | length')" == "0" ]]; then
+    local reason
+    reason="$(echo "$json" | jq -r '.failures[0].reason // empty')"
+    echo "ECS cluster not found: $name${reason:+ ($reason)}" >&2
+    exit 1
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq '.clusters[0]'
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .clusters[0] |
+    "Name: \(.clusterName)",
+    "Arn: \(.clusterArn)",
+    "Status: \(.status // "-")",
+    "ActiveServices: \(.activeServicesCount // 0)",
+    "RunningTasks: \(.runningTasksCount // 0)",
+    "PendingTasks: \(.pendingTasksCount // 0)",
+    "RegisteredInstances: \(.registeredContainerInstancesCount // 0)",
+    "CapacityProviders: \(if (.capacityProviders // [] | length) > 0 then (.capacityProviders | join(", ")) else "-" end)",
+    "DefaultCapacityProviderStrategy:",
+    (if (.defaultCapacityProviderStrategy // [] | length) > 0 then
+      (.defaultCapacityProviderStrategy[] | "  \(.capacityProvider) weight=\(.weight // "-") base=\(.base // "-")")
+    else "  (none)" end),
+    "Settings:",
+    (if (.settings // [] | length) > 0 then
+      (.settings[] | "  \(.name)=\(.value // "-")")
+    else "  (none)" end)
+  '
+}
+
+ecs_service_ls_csv() {
+  echo "Name,LaunchType,Desired,Running,Pending,Status,CapacityProviders,TaskDefinition"
+  echo "$1" | jq -r '
+    .services[]? |
+    [
+      .serviceName,
+      (.launchType // "-"),
+      ((.desiredCount // 0) | tostring),
+      ((.runningCount // 0) | tostring),
+      ((.pendingCount // 0) | tostring),
+      (.status // "-"),
+      (if (.capacityProviderStrategy // [] | length) > 0 then
+         (.capacityProviderStrategy | map(.capacityProvider) | join(";"))
+       else "-" end),
+      ((.taskDefinition // "-") | split("/") | last)
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+ecs_service_ls_json() {
+  echo "$1" | jq '
+    [ .services[]? | {
+        Name: .serviceName,
+        LaunchType: (.launchType // null),
+        DesiredCount: (.desiredCount // 0),
+        RunningCount: (.runningCount // 0),
+        PendingCount: (.pendingCount // 0),
+        Status: (.status // null),
+        CapacityProviders: ((.capacityProviderStrategy // []) | map(.capacityProvider)),
+        TaskDefinition: (.taskDefinition // null)
+      } ]
+  '
+}
+
+ecs_service_ls() {
+  local cluster=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$cluster" ]]; then
+          cluster="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster" ]]; then
+    echo "usage: awst ecs service ls <cluster> [--csv] [--json]" >&2
+    exit 1
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws ecs list-services --cluster "$cluster" --output json; echo
+    printf '%q ' aws ecs describe-services --cluster "$cluster" --services '<service-arns>' --output json; echo
+    exit 0
+  fi
+
+  local arns
+  arns="$(aws ecs list-services --cluster "$cluster" --output json | jq -r '.serviceArns[]?')"
+  local -a arr=()
+  if [[ -n "$arns" ]]; then
+    mapfile -t arr <<<"$arns"
+  fi
+
+  local json
+  json="$(ecs_describe_services_json "$cluster" "${arr[@]}")"
+
+  case "$fmt" in
+    json) ecs_service_ls_json "$json" ;;
+    csv) ecs_service_ls_csv "$json" ;;
+    table) ecs_service_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
+ecs_service_show() {
+  local cluster=""
+  local service=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$cluster" ]]; then
+          cluster="$1"
+        elif [[ -z "$service" ]]; then
+          service="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster" || -z "$service" ]]; then
+    echo "usage: awst ecs service show <cluster> <service> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(ecs describe-services --cluster "$cluster" --services "$service" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+  if [[ "$(echo "$json" | jq '.services | length')" == "0" ]]; then
+    local reason
+    reason="$(echo "$json" | jq -r '.failures[0].reason // empty')"
+    echo "ECS service not found: $service${reason:+ ($reason)}" >&2
+    exit 1
+  fi
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq '.services[0]'
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .services[0] |
+    "Name: \(.serviceName)",
+    "Cluster: \((.clusterArn // "-") | split("/") | last)",
+    "Status: \(.status // "-")",
+    "LaunchType: \(.launchType // "-")",
+    "CapacityProviders: \(if (.capacityProviderStrategy // [] | length) > 0 then (.capacityProviderStrategy | map(.capacityProvider) | join(", ")) else "-" end)",
+    "TaskDefinition: \(.taskDefinition // "-")",
+    "Desired/Running/Pending: \(.desiredCount // 0) / \(.runningCount // 0) / \(.pendingCount // 0)",
+    "SchedulingStrategy: \(.schedulingStrategy // "-")",
+    "PlatformVersion: \(.platformVersion // "-")",
+    "CreatedAt: \(.createdAt // "-")",
+    "Deployments:",
+    (if (.deployments // [] | length) > 0 then
+      (.deployments[] | "  \(.id) \(.status) rollout=\(.rolloutState // "-") desired=\(.desiredCount // 0) running=\(.runningCount // 0) pending=\(.pendingCount // 0) updated=\(.updatedAt // "-")")
+    else "  (none)" end),
+    "LoadBalancers:",
+    (if (.loadBalancers // [] | length) > 0 then
+      (.loadBalancers[] | "  \(.targetGroupArn // "-") container=\(.containerName // "-"):\(.containerPort // "-")")
+    else "  (none)" end),
+    "NetworkConfiguration:",
+    (if .networkConfiguration.awsvpcConfiguration then
+      "  subnets: \((.networkConfiguration.awsvpcConfiguration.subnets // []) | join(", "))",
+      "  securityGroups: \((.networkConfiguration.awsvpcConfiguration.securityGroups // []) | join(", "))",
+      "  assignPublicIp: \(.networkConfiguration.awsvpcConfiguration.assignPublicIp // "-")"
+    else "  (none)" end),
+    "RecentEvents:",
+    (if (.events // [] | length) > 0 then
+      (.events[:10][] | "  \(.createdAt // "-")  \((.message // "-") | gsub("[\n\t]"; " "))")
+    else "  (none)" end)
+  '
+}
+
+ecs_taskdef_ls_csv() {
+  echo "Family,Revision,TaskDefinitionArn"
+  echo "$1" | jq -r '
+    .taskDefinitionArns[]? |
+    (split("/") | last) as $fr |
+    ($fr | split(":")) as $p |
+    [ $p[0], ($p[1] // "-"), . ] | @tsv
+  ' | tr '\t' ','
+}
+
+ecs_taskdef_ls_json() {
+  echo "$1" | jq '
+    [ .taskDefinitionArns[]? |
+      (split("/") | last) as $fr |
+      ($fr | split(":")) as $p |
+      { Family: $p[0], Revision: ($p[1] // null), TaskDefinitionArn: . } ]
+  '
+}
+
+ecs_taskdef_ls() {
+  local family=""
+  local status=""
+  local sort="DESC"
+  local max="100"
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --family) family="${2:-}"; shift 2 ;;
+      --status) status="${2:-}"; shift 2 ;;
+      --sort) sort="${2:-}"; shift 2 ;;
+      --max) max="${2:-}"; shift 2 ;;
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        echo "unknown option: $1 (awst ecs task-definition help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  sort="${sort^^}"
+  case "$sort" in
+    ASC|DESC) ;;
+    *)
+      echo "--sort must be asc or desc: $sort" >&2
+      exit 1
+      ;;
+  esac
+  case "$status" in
+    ""|ACTIVE|INACTIVE|DELETE) ;;
+    *)
+      echo "--status must be ACTIVE, INACTIVE, or DELETE: $status" >&2
+      exit 1
+      ;;
+  esac
+  if ! [[ "$max" =~ ^[0-9]+$ ]]; then
+    echo "--max must be a positive integer: $max" >&2
+    exit 1
+  fi
+
+  local -a cmd=(ecs list-task-definitions --sort "$sort" --max-items "$max" --output json)
+  if [[ -n "$family" ]]; then
+    cmd+=(--family-prefix "$family")
+  fi
+  if [[ -n "$status" ]]; then
+    cmd+=(--status "$status")
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  case "$fmt" in
+    json) ecs_taskdef_ls_json "$json" ;;
+    csv) ecs_taskdef_ls_csv "$json" ;;
+    table) ecs_taskdef_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
+ecs_taskdef_show() {
+  local name=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst ecs task-definition show <family[:revision]|arn> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(ecs describe-task-definition --task-definition "$name" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"; echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq '.taskDefinition'
+    return 0
+  fi
+
+  echo "$json" | jq -r '
+    .taskDefinition |
+    "Family: \(.family)",
+    "Revision: \(.revision)",
+    "Status: \(.status // "-")",
+    "TaskDefinitionArn: \(.taskDefinitionArn)",
+    "RequiresCompatibilities: \(if (.requiresCompatibilities // [] | length) > 0 then (.requiresCompatibilities | join(", ")) else "-" end)",
+    "NetworkMode: \(.networkMode // "-")",
+    "Cpu: \(.cpu // "-")",
+    "Memory: \(.memory // "-")",
+    "ExecutionRoleArn: \(.executionRoleArn // "-")",
+    "TaskRoleArn: \(.taskRoleArn // "-")",
+    "Volumes:",
+    (if (.volumes // [] | length) > 0 then
+      (.volumes[] | "  \(.name) host=\(.host.sourcePath // "-")")
+    else "  (none)" end),
+    "ContainerDefinitions:",
+    (if (.containerDefinitions // [] | length) > 0 then
+      (.containerDefinitions[] |
+        "  [\(.name)] image=\(.image) essential=\(.essential // false) cpu=\(.cpu // "-") memory=\(.memory // "-")",
+        (if (.portMappings // [] | length) > 0 then
+          "    ports: \((.portMappings // []) | map("\(.containerPort)/\(.protocol // "tcp")\(if .hostPort then "->\(.hostPort)" else "" end)") | join(", "))"
+        else empty end),
+        (if (.environment // [] | length) > 0 then
+          "    env: \((.environment // []) | map("\(.name)=\(.value)") | join(", "))"
+        else empty end),
+        (if (.secrets // [] | length) > 0 then
+          "    secrets: \((.secrets // []) | map("\(.name)<-\(.valueFrom)") | join(", "))"
+        else empty end),
+        (if .logConfiguration then
+          "    log: \(.logConfiguration.logDriver)\(if .logConfiguration.options then " " + ((.logConfiguration.options | to_entries) | map("\(.key)=\(.value)") | join(" ")) else "" end)"
+        else empty end),
+        (if (.mountPoints // [] | length) > 0 then
+          "    mountPoints: \((.mountPoints // []) | map("\(.sourceVolume)->\(.containerPath)") | join(", "))"
+        else empty end),
+        (if (.dependsOn // [] | length) > 0 then
+          "    dependsOn: \((.dependsOn // []) | map("\(.containerName):\(.condition)") | join(", "))"
+        else empty end),
+        (if .healthCheck then "    healthCheck: \(.healthCheck | tojson)" else empty end))
+    else "  (none)" end)
+  '
+}
+
+case "$sub" in
+  cluster)
+    cluster_cmd="${1:-}"
+    shift || true
+    case "$cluster_cmd" in
+      ls|list)
+        ecs_cluster_ls "$@"
+        ;;
+      show|describe)
+        ecs_cluster_show "$@"
+        ;;
+      *)
+        echo "cluster commands:"
+        echo "  ls [--csv] [--json]        ECS クラスタ一覧を表示"
+        echo "  show <cluster> [--json]    クラスタの詳細を表示"
+        ;;
+    esac
+    ;;
+  service|services)
+    service_cmd="${1:-}"
+    shift || true
+    case "$service_cmd" in
+      ls|list)
+        ecs_service_ls "$@"
+        ;;
+      show|describe)
+        ecs_service_show "$@"
+        ;;
+      *)
+        echo "service commands:"
+        echo "  ls <cluster> [--csv] [--json]       クラスタ内のサービス一覧を表示"
+        echo "  show <cluster> <service> [--json]   サービスの詳細を表示"
+        ;;
+    esac
+    ;;
+  task-definition|td)
+    td_cmd="${1:-}"
+    shift || true
+    case "$td_cmd" in
+      ls|list)
+        ecs_taskdef_ls "$@"
+        ;;
+      show|describe)
+        ecs_taskdef_show "$@"
+        ;;
+      *)
+        echo "task-definition commands:"
+        echo "  ls [--family PREFIX] [--status ACTIVE|INACTIVE|DELETE] [--sort asc|desc] [--max N] [--csv] [--json]"
+        echo "  show <family[:revision]|arn> [--json]"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown ecs command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
