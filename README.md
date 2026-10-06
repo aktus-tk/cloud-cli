@@ -270,6 +270,10 @@ awst ecs container-instance ls RHEMS-FileStorage-Cluster  # EC2 起動タイプ�
 awst ecs container-instance ls RHEMS-FileStorage-Cluster --csv
 awst ecs container-instance show RHEMS-FileStorage-Cluster i-0598e29e871a813bd  # エージェント接続 / リソース / 属性
 awst ecs container-instance show RHEMS-FileStorage-Cluster i-0598e29e871a813bd --json
+awst ecs task ls RHEMS-FileStorage-Cluster     # クラスタ内のタスク一覧（既定は実行中）
+awst ecs task ls RHEMS-FileStorage-Cluster --service web   # サービスのタスクのみ
+awst ecs task ls RHEMS-FileStorage-Cluster --status STOPPED  # 停止済みタスク
+awst ecs task ls RHEMS-FileStorage-Cluster --family web --csv
 ```
 
 `td` は `task-definition`、`ci` は `container-instance` のエイリアス（例: `awst ecs td ls` / `awst ecs ci ls my-cluster`）。

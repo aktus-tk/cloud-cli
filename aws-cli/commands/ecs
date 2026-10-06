@@ -23,6 +23,8 @@ commands:
                                               EC2 起動タイプのコンテナインスタンス一覧を表示
   container-instance show <cluster> <container-instance> [--json]
                                               コンテナインスタンスの詳細を表示
+  task ls <cluster> [--status RUNNING|STOPPED] [--service NAME] [--family NAME] [--csv] [--json]
+                                              クラスタ内のタスク一覧を表示
 
 aliases:
   td   task-definition と同じ（例: awst ecs td ls）
@@ -40,6 +42,9 @@ examples:
   awst ecs task-definition show web:12
   awst ecs container-instance ls RHEMS-FileStorage-Cluster
   awst ecs container-instance show RHEMS-FileStorage-Cluster i-0598e29e871a813bd
+  awst ecs task ls RHEMS-FileStorage-Cluster
+  awst ecs task ls RHEMS-FileStorage-Cluster --service web
+  awst ecs task ls RHEMS-FileStorage-Cluster --status STOPPED
 EOF
 }
 
@@ -693,6 +698,128 @@ ecs_ci_show() {
   '
 }
 
+# describe-tasks は最大 100 件ずつ。渡された ARN を分割して 1 つの JSON にまとめる。
+ecs_describe_tasks_json() {
+  local cluster="$1"
+  shift
+  local -a arns=("$@")
+  local -a out=()
+  local i
+  for ((i = 0; i < ${#arns[@]}; i += 100)); do
+    local chunk=("${arns[@]:i:100}")
+    out+=("$(aws ecs describe-tasks --cluster "$cluster" --tasks "${chunk[@]}" --output json)")
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then
+    echo '{"tasks":[],"failures":[]}'
+    return 0
+  fi
+  printf '%s\n' "${out[@]}" | jq -s '{tasks: (map(.tasks) | add // []), failures: (map(.failures) | add // [])}'
+}
+
+ecs_task_ls_csv() {
+  echo "TaskId,TaskDefinition,LastStatus,DesiredStatus,Health,LaunchType,Group,StartedAt"
+  echo "$1" | jq -r '
+    .tasks[]? |
+    [
+      (.taskArn | split("/") | last),
+      ((.taskDefinitionArn // "-") | split("/") | last),
+      (.lastStatus // "-"),
+      (.desiredStatus // "-"),
+      (.healthStatus // "-"),
+      (.launchType // "-"),
+      (.group // "-"),
+      (.startedAt // "-")
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+ecs_task_ls_json() {
+  echo "$1" | jq '
+    [ .tasks[]? | {
+        TaskId: (.taskArn | split("/") | last),
+        TaskArn: .taskArn,
+        TaskDefinition: (.taskDefinitionArn // null),
+        LastStatus: (.lastStatus // null),
+        DesiredStatus: (.desiredStatus // null),
+        HealthStatus: (.healthStatus // null),
+        LaunchType: (.launchType // null),
+        Group: (.group // null),
+        StartedAt: (.startedAt // null),
+        StoppedReason: (.stoppedReason // null)
+      } ]
+  '
+}
+
+ecs_task_ls() {
+  local cluster=""
+  local status=""
+  local service=""
+  local family=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --status) status="${2:-}"; shift 2 ;;
+      --service) service="${2:-}"; shift 2 ;;
+      --family) family="${2:-}"; shift 2 ;;
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$cluster" ]]; then
+          cluster="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$cluster" ]]; then
+    echo "usage: awst ecs task ls <cluster> [--status RUNNING|STOPPED] [--service NAME] [--family NAME] [--csv] [--json]" >&2
+    exit 1
+  fi
+
+  status="${status^^}"
+  case "$status" in
+    ""|RUNNING|STOPPED) ;;
+    *)
+      echo "--status must be RUNNING or STOPPED: $status" >&2
+      exit 1
+      ;;
+  esac
+
+  local -a list_cmd=(ecs list-tasks --cluster "$cluster" --output json)
+  if [[ -n "$status" ]]; then
+    list_cmd+=(--desired-status "$status")
+  fi
+  if [[ -n "$service" ]]; then
+    list_cmd+=(--service-name "$service")
+  fi
+  if [[ -n "$family" ]]; then
+    list_cmd+=(--family "$family")
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${list_cmd[@]}"; echo
+    printf '%q ' aws ecs describe-tasks --cluster "$cluster" --tasks '<task-arns>' --output json; echo
+    exit 0
+  fi
+
+  local arns
+  arns="$(aws "${list_cmd[@]}" | jq -r '.taskArns[]?')"
+  local -a arr=()
+  if [[ -n "$arns" ]]; then
+    mapfile -t arr <<<"$arns"
+  fi
+
+  local json
+  json="$(ecs_describe_tasks_json "$cluster" "${arr[@]}")"
+
+  case "$fmt" in
+    json) ecs_task_ls_json "$json" ;;
+    csv) ecs_task_ls_csv "$json" ;;
+    table) ecs_task_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
 case "$sub" in
   cluster)
     cluster_cmd="${1:-}"
@@ -759,6 +886,20 @@ case "$sub" in
         echo "container-instance commands:"
         echo "  ls <cluster> [--csv] [--json]                      コンテナインスタンス一覧を表示"
         echo "  show <cluster> <container-instance> [--json]       コンテナインスタンスの詳細を表示"
+        ;;
+    esac
+    ;;
+  task)
+    task_cmd="${1:-}"
+    shift || true
+    case "$task_cmd" in
+      ls|list)
+        ecs_task_ls "$@"
+        ;;
+      *)
+        echo "task commands:"
+        echo "  ls <cluster> [--status RUNNING|STOPPED] [--service NAME] [--family NAME] [--csv] [--json]"
+        echo "                                                クラスタ内のタスク一覧を表示"
         ;;
     esac
     ;;
