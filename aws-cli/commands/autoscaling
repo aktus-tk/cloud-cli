@@ -1,0 +1,412 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+usage: awst autoscaling <command> [args]
+
+Auto Scaling Group の参照（読み取り専用）
+
+commands:
+  group ls [--csv] [--json]                  ASG 一覧を表示
+  group show <name> [--json]                 ASG の設定・インスタンス・ポリシー・refresh・activity を表示
+  group instances <name> [--csv] [--json]    ASG に属するインスタンス一覧を表示
+  group activity <name> [--max N] [--csv]    ASG のスケーリングアクティビティを表示
+
+aliases:
+  as   autoscaling と同じ（例: awst as group ls）
+
+examples:
+  awst autoscaling group ls
+  awst as group ls --csv
+  awst as group show my-asg
+  awst as group show my-asg --json
+  awst as group instances my-asg --csv
+  awst as group activity my-asg --max 10
+EOF
+}
+
+asg_group_ls_csv() {
+  echo "$1" | jq -r '
+    .AutoScalingGroups[]? |
+    [
+      .AutoScalingGroupName,
+      (.MinSize | tostring),
+      (.DesiredCapacity | tostring),
+      (.MaxSize | tostring),
+      ((.Instances // []) | length | tostring),
+      ((.AvailabilityZones // []) | join(";")),
+      (
+        if .LaunchTemplate then
+          ((.LaunchTemplate.LaunchTemplateName // .LaunchTemplate.LaunchTemplateId // "-")
+            + ":" + (.LaunchTemplate.Version // "-"))
+        elif .MixedInstancesPolicy then
+          ("mixed:" + (.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateName
+            // .MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId // "-"))
+        elif .LaunchConfigurationName then
+          ("lc:" + .LaunchConfigurationName)
+        else
+          "-"
+        end
+      ),
+      ((.TargetGroupARNs // [])
+        | map(split("/") | if length >= 2 then .[-2] else .[-1] end)
+        | join(";"))
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+asg_group_ls_json() {
+  echo "$1" | jq '
+    [ .AutoScalingGroups[]? | {
+        Name: .AutoScalingGroupName,
+        MinSize,
+        DesiredCapacity,
+        MaxSize,
+        InstanceCount: ((.Instances // []) | length),
+        AvailabilityZones: (.AvailabilityZones // []),
+        LaunchTemplate: (.LaunchTemplate // null),
+        LaunchConfigurationName: (.LaunchConfigurationName // null),
+        TargetGroupARNs: (.TargetGroupARNs // [])
+      } ]
+  '
+}
+
+asg_group_ls() {
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        echo "unknown option: $1 (awst autoscaling group help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local -a cmd=(autoscaling describe-auto-scaling-groups --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  case "$fmt" in
+    json) asg_group_ls_json "$json" ;;
+    csv) asg_group_ls_csv "$json" ;;
+    table) asg_group_ls_csv "$json" | column -s, -t ;;
+  esac
+}
+
+asg_group_instances_csv() {
+  echo "$1" | jq -r '
+    (.AutoScalingGroups[0].Instances // [])[]? |
+    [
+      .InstanceId,
+      (.InstanceType // "-"),
+      (.AvailabilityZone // "-"),
+      (.LifecycleState // "-"),
+      (.HealthStatus // "-"),
+      (.ProtectedFromScaleIn | tostring),
+      (
+        if .LaunchTemplate then
+          ((.LaunchTemplate.LaunchTemplateName // .LaunchTemplate.LaunchTemplateId // "-")
+            + ":" + (.LaunchTemplate.Version // "-"))
+        elif .LaunchConfigurationName then
+          ("lc:" + .LaunchConfigurationName)
+        else
+          "-"
+        end
+      )
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+asg_group_instances_json() {
+  echo "$1" | jq '
+    [ (.AutoScalingGroups[0].Instances // [])[]? | {
+        InstanceId,
+        InstanceType,
+        AvailabilityZone,
+        LifecycleState,
+        HealthStatus,
+        ProtectedFromScaleIn,
+        LaunchTemplate: (.LaunchTemplate // null),
+        LaunchConfigurationName: (.LaunchConfigurationName // null),
+        WeightedCapacity: (.WeightedCapacity // null)
+      } ]
+  '
+}
+
+asg_group_instances() {
+  local name=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst autoscaling group instances <name> [--csv] [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$name" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+  if [[ "$(echo "$json" | jq '.AutoScalingGroups | length')" == "0" ]]; then
+    echo "Auto Scaling group not found: $name" >&2
+    exit 1
+  fi
+
+  case "$fmt" in
+    json) asg_group_instances_json "$json" ;;
+    csv) asg_group_instances_csv "$json" ;;
+    table) asg_group_instances_csv "$json" | column -s, -t ;;
+  esac
+}
+
+asg_group_activity_csv() {
+  echo "StartTime,EndTime,StatusCode,Progress,Description,Cause"
+  echo "$1" | jq -r '
+    .Activities[]? |
+    [
+      (.StartTime // "-"),
+      (.EndTime // "-"),
+      (.StatusCode // "-"),
+      ((.Progress // 0) | tostring),
+      ((.Description // "-") | gsub("[,\n\t]"; " ")),
+      ((.Cause // "-") | gsub("[,\n\t]"; " "))
+    ] | @tsv
+  ' | tr '\t' ','
+}
+
+asg_group_activity_json() {
+  echo "$1" | jq '
+    [ .Activities[]? | {
+        ActivityId,
+        StartTime,
+        EndTime,
+        StatusCode,
+        StatusMessage,
+        Progress,
+        Description,
+        Cause
+      } ]
+  '
+}
+
+asg_group_activity() {
+  local name=""
+  local max="20"
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max)
+        max="${2:-}"
+        shift 2
+        ;;
+      --csv) fmt="csv"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst autoscaling group activity <name> [--max N] [--csv]" >&2
+    exit 1
+  fi
+  if ! [[ "$max" =~ ^[0-9]+$ ]]; then
+    echo "--max must be a positive integer: $max" >&2
+    exit 1
+  fi
+
+  local -a cmd=(autoscaling describe-scaling-activities
+    --auto-scaling-group-name "$name" --max-items "$max" --output json)
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  case "$fmt" in
+    json) asg_group_activity_json "$json" ;;
+    csv) asg_group_activity_csv "$json" ;;
+    table) asg_group_activity_csv "$json" | column -s, -t ;;
+  esac
+}
+
+asg_group_show() {
+  local name=""
+  local fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "usage: awst autoscaling group show <name> [--json]" >&2
+    exit 1
+  fi
+
+  local -a asg_cmd=(autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$name" --output json)
+  local -a pol_cmd=(autoscaling describe-policies --auto-scaling-group-name "$name" --output json)
+  local -a ref_cmd=(autoscaling describe-instance-refreshes --auto-scaling-group-name "$name" --output json)
+  local -a act_cmd=(autoscaling describe-scaling-activities --auto-scaling-group-name "$name" --max-items 10 --output json)
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${asg_cmd[@]}"; echo
+    printf '%q ' aws "${pol_cmd[@]}"; echo
+    printf '%q ' aws "${ref_cmd[@]}"; echo
+    printf '%q ' aws "${act_cmd[@]}"; echo
+    exit 0
+  fi
+
+  local asg_json pol_json ref_json act_json
+  asg_json="$(aws "${asg_cmd[@]}")"
+  if [[ "$(echo "$asg_json" | jq '.AutoScalingGroups | length')" == "0" ]]; then
+    echo "Auto Scaling group not found: $name" >&2
+    exit 1
+  fi
+  pol_json="$(aws "${pol_cmd[@]}" || echo '{"ScalingPolicies":[]}')"
+  ref_json="$(aws "${ref_cmd[@]}" || echo '{"InstanceRefreshes":[]}')"
+  act_json="$(aws "${act_cmd[@]}" || echo '{"Activities":[]}')"
+
+  if [[ "$fmt" == "json" ]]; then
+    jq -n --argjson asg "$asg_json" --argjson pol "$pol_json" \
+      --argjson ref "$ref_json" --argjson act "$act_json" \
+      '{
+        AutoScalingGroup: $asg.AutoScalingGroups[0],
+        ScalingPolicies: $pol.ScalingPolicies,
+        InstanceRefreshes: $ref.InstanceRefreshes,
+        Activities: $act.Activities
+      }'
+    return 0
+  fi
+
+  echo "$asg_json" | jq -r '
+    .AutoScalingGroups[0] |
+    "Name: \(.AutoScalingGroupName)",
+    "ARN: \(.AutoScalingGroupArn)",
+    "Min/Desired/Max: \(.MinSize) / \(.DesiredCapacity) / \(.MaxSize)",
+    "AvailabilityZones: \(if (.AvailabilityZones // [] | length) > 0 then (.AvailabilityZones | join(", ")) else "-" end)",
+    "Subnets: \(if (.VPCZoneIdentifier // "") == "" then "-" else (.VPCZoneIdentifier | split(",") | join(", ")) end)",
+    "HealthCheck: \(.HealthCheckType // "-") (grace \(.HealthCheckGracePeriod // "-")s)",
+    (if .LaunchTemplate then
+      "LaunchTemplate: \(.LaunchTemplate.LaunchTemplateName // .LaunchTemplate.LaunchTemplateId // "-") version \(.LaunchTemplate.Version // "-")"
+    elif .MixedInstancesPolicy then
+      "MixedInstancesPolicy: LT \(.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateName // .MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId // "-") version \(.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.Version // "-")"
+    elif .LaunchConfigurationName then
+      "LaunchConfiguration: \(.LaunchConfigurationName)"
+    else empty end),
+    "TargetGroups: \(if (.TargetGroupARNs // [] | length) > 0 then (.TargetGroupARNs | map(split("/") | if length >= 2 then .[-2] else .[-1] end) | join(", ")) else "-" end)",
+    "Instances:",
+    (if (.Instances // [] | length) > 0 then
+      (.Instances[] | "  \(.InstanceId)  az=\(.AvailabilityZone)  lifecycle=\(.LifecycleState)  health=\(.HealthStatus)  protected=\(.ProtectedFromScaleIn)")
+    else "  (none)" end)
+  '
+
+  echo "$pol_json" | jq -r '
+    "ScalingPolicies:",
+    (if (.ScalingPolicies // [] | length) > 0 then
+      (.ScalingPolicies[] |
+        "  [\(.PolicyType // "-")] \(.PolicyName) enabled=\(.Enabled)"
+        + (if .TargetTrackingConfiguration then
+             " target=\(.TargetTrackingConfiguration.TargetValue) metric=\(.TargetTrackingConfiguration.PredefinedMetricSpecification.PredefinedMetricType // .TargetTrackingConfiguration.CustomizedMetricSpecification.MetricName // "-")"
+           elif .StepScalingPolicyConfiguration then
+             " adjustment=\(.StepScalingPolicyConfiguration.AdjustmentType // "-")"
+           elif .SimpleScalingPolicyConfiguration then
+             " adjustment=\(.SimpleScalingPolicyConfiguration.AdjustmentType // "-")"
+           else "" end))
+    else "  (none)" end)
+  '
+
+  echo "$ref_json" | jq -r '
+    "InstanceRefresh:",
+    (if (.InstanceRefreshes // [] | length) > 0 then
+      (.InstanceRefreshes | sort_by(.StartTime) | last |
+        "  \(.Status) (id=\(.InstanceRefreshId)) start=\(.StartTime // "-") end=\(.EndTime // "-") progress=\(.PercentageComplete // 0)%",
+        (if .StatusReason then "  reason: \(.StatusReason)" else empty end))
+    else "  (none)" end)
+  '
+
+  echo "$act_json" | jq -r '
+    "RecentActivities:",
+    (if (.Activities // [] | length) > 0 then
+      (.Activities[:10][] |
+        "  \(.StartTime) \(.StatusCode) \(.Progress // 0)%  \(.Description // "-")",
+        (if .Cause then "    cause: \((.Cause | gsub("[\n]"; " "))[0:160])" else empty end))
+    else "  (none)" end)
+  '
+}
+
+case "$sub" in
+  group)
+    group_cmd="${1:-}"
+    shift || true
+    case "$group_cmd" in
+      ls|list)
+        asg_group_ls "$@"
+        ;;
+      show|describe)
+        asg_group_show "$@"
+        ;;
+      instances)
+        asg_group_instances "$@"
+        ;;
+      activity|activities)
+        asg_group_activity "$@"
+        ;;
+      *)
+        echo "group commands:"
+        echo "  ls [--csv] [--json]                 ASG 一覧を表示"
+        echo "  show <name> [--json]                ASG の詳細を表示"
+        echo "  instances <name> [--csv] [--json]   ASG のインスタンス一覧を表示"
+        echo "  activity <name> [--max N] [--csv]   ASG のスケーリングアクティビティを表示"
+        ;;
+    esac
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown autoscaling command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
