@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls|list)
+    exec gcl firewall list "$@"
+    ;;
+  show)
+    # 未実装: aktus-tk/gcp (cmd/firewall.go) で describe を追加する
+    echo "gcl: firewall show is not implemented yet." >&2
+    echo "  add it in aktus-tk/gcp (cmd/firewall.go, internal/compute/firewalls.go)" >&2
+    exit 2
+    ;;
+  help|-h|--help|"")
+    echo "firewall commands (gcloud-lite backend):"
+    echo "  ls               ファイアウォールルール一覧（gcloud 形式テーブル）"
+    echo ""
+    echo "not implemented in gcl (see aktus-tk/gcp):"
+    echo "  show RULE_NAME"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl firewall help" >&2
+    exit 1
+    ;;
+esac

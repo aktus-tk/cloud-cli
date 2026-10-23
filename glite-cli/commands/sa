@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls|list)
+    exec gcl iam service-accounts "$@"
+    ;;
+  show|keys)
+    # 未実装: aktus-tk/gcp で service-accounts describe / keys を追加する
+    echo "gcl: sa $cmd is not implemented yet." >&2
+    echo "  add it in aktus-tk/gcp (cmd/iam.go, internal/iam)" >&2
+    exit 2
+    ;;
+  help|-h|--help|"")
+    echo "sa (service-account) commands (gcloud-lite backend):"
+    echo "  ls               サービスアカウント一覧"
+    echo ""
+    echo "not implemented in gcl (see aktus-tk/gcp):"
+    echo "  show EMAIL / keys EMAIL"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl sa help" >&2
+    exit 1
+    ;;
+esac

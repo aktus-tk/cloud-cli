@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls)
+    # gcloud 形式のテーブル (NAME ZONE MACHINE_TYPE INTERNAL_IP EXTERNAL_IP STATUS)
+    exec gcl compute instances "$@"
+    ;;
+  show)
+    if [[ -z "$1" ]]; then
+      echo "usage: gcl gce show INSTANCE_NAME" >&2
+      exit 1
+    fi
+    exec gcl compute instance "$@"
+    ;;
+  disks)
+    exec gcl compute disks "$@"
+    ;;
+  addresses)
+    exec gcl compute addresses "$@"
+    ;;
+  snapshots)
+    exec gcl compute snapshots "$@"
+    ;;
+  # 以下は未実装: aktus-tk/gcp (gcloud-lite) 側で追加実装する
+  images|templates|template|groups|group-instances|managed-group)
+    echo "gcl: '$cmd' is not implemented yet." >&2
+    echo "  add it in aktus-tk/gcp (cmd/compute.go, internal/compute)" >&2
+    exit 2
+    ;;
+  help|-h|--help|"")
+    echo "gce commands (gcloud-lite backend):"
+    echo "  ls               インスタンス一覧（gcloud 形式テーブル）"
+    echo "  show NAME        インスタンス詳細"
+    echo "  disks            ディスク一覧"
+    echo "  addresses        予約済み IP 一覧"
+    echo "  snapshots        スナップショット一覧"
+    echo ""
+    echo "not implemented in gcl (see aktus-tk/gcp):"
+    echo "  images / templates / template / groups / group-instances / managed-group"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl gce help" >&2
+    exit 1
+    ;;
+esac

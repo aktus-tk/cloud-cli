@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  policy)
+    exec gcl iam policy "$@"
+    ;;
+  service-accounts|sa)
+    exec gcl iam service-accounts "$@"
+    ;;
+  # 未実装: aktus-tk/gcp で roles / custom-roles / service-accounts show / keys を追加
+  show|keys|roles|bindings|members)
+    echo "gcl: iam $cmd is not implemented yet." >&2
+    echo "  add it in aktus-tk/gcp (cmd/iam.go, internal/iam)" >&2
+    exit 2
+    ;;
+  help|-h|--help|"")
+    echo "iam commands (gcloud-lite backend):"
+    echo "  policy                 プロジェクト IAM ポリシー"
+    echo "  service-accounts       サービスアカウント一覧"
+    echo ""
+    echo "not implemented in gcl (see aktus-tk/gcp):"
+    echo "  show / keys / roles / bindings / members"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl iam help" >&2
+    exit 1
+    ;;
+esac

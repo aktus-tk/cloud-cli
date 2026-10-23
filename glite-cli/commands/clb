@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls|list)
+    exec gcl lb list "$@"
+    ;;
+  info|show)
+    exec gcl lb describe "$@"
+    ;;
+  backends)
+    exec gcl lb backends "$@"
+    ;;
+  health)
+    exec gcl lb health "$@"
+    ;;
+  help|-h|--help|"")
+    echo "clb commands (gcloud-lite backend):"
+    echo "  ls               HTTP(S) LB 一覧"
+    echo "  info [NAME]      LB トポロジ表示"
+    echo "  backends         バックエンドサービス一覧"
+    echo "  health [NAME]    ヘルスチェック詳細"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl clb help" >&2
+    exit 1
+    ;;
+esac

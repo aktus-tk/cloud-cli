@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+if [[ -L "$0" ]]; then
+  _bin="$(dirname "$(readlink -f "$0")")"
+else
+  _bin="$(dirname "$0")"
+fi
+
+COMMANDS="${_bin}/../commands"
+CMD="$1"
+
+if [[ -z "$CMD" ]]; then
+  echo "usage: gcl <command> ..."
+  echo
+  echo "available commands:"
+  ls "$COMMANDS"
+  exit 1
+fi
+
+shift
+
+# gcl 本体（gcloud-lite / aktus-tk/gcp）に委譲するラッパ。
+# 表示は gcloud 形式に準拠する。ネイティブ CLI は使わない。
+if ! command -v gcl >/dev/null 2>&1; then
+  echo "gcl wrapper: gcl (gcloud-lite) not found on PATH" >&2
+  echo "  see: aktus-tk/gcp (go build -o gcl .)" >&2
+  exit 1
+fi
+
+COMMAND="$COMMANDS/$CMD"
+
+if [[ ! -x "$COMMAND" ]]; then
+  echo "unknown command: $CMD"
+  exit 1
+fi
+
+# 引数なしなら help
+if [[ $# -eq 0 ]]; then
+  exec "$COMMAND" help
+else
+  exec "$COMMAND" "$@"
+fi

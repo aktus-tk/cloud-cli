@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+# gcloud-lite はプロジェクトを環境変数 (GOOGLE_CLOUD_PROJECT / CLOUDSDK_CORE_PROJECT)
+# または --project フラグで解決する。config 保存はしない。
+case "$cmd" in
+  current)
+    if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]; then
+      echo "${GOOGLE_CLOUD_PROJECT}"
+    elif [[ -n "${CLOUDSDK_CORE_PROJECT:-}" ]]; then
+      echo "${CLOUDSDK_CORE_PROJECT}"
+    else
+      echo "project is not configured (GOOGLE_CLOUD_PROJECT / CLOUDSDK_CORE_PROJECT)" >&2
+      exit 1
+    fi
+    ;;
+  describe|list)
+    # 未実装: aktus-tk/gcp で projects describe / list (Cloud Resource Manager) を追加する
+    echo "gcl: project $cmd is not implemented yet." >&2
+    echo "  add it in aktus-tk/gcp (Cloud Resource Manager API)" >&2
+    exit 2
+    ;;
+  help|-h|--help|"")
+    echo "project commands (gcloud-lite backend):"
+    echo "  current          現在のプロジェクト（環境変数）を表示"
+    echo ""
+    echo "not implemented in gcl (see aktus-tk/gcp):"
+    echo "  describe [PROJECT] / list"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl project help" >&2
+    exit 1
+    ;;
+esac

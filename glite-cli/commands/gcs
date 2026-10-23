@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls|list)
+    if [[ -z "$1" || "$1" == "--csv" ]]; then
+      exec gcl storage buckets "$@"
+    fi
+    exec gcl storage objects "$@"
+    ;;
+  # cp / rm は変更操作のため gcl (read-only 設計) では扱わない。
+  # 必要なら aktus-tk/gcp 側での追加実装を検討する。
+  cp|rm)
+    echo "gcl: storage $cmd is not implemented (gcloud-lite is read-only)." >&2
+    echo "  if needed, add it in aktus-tk/gcp (cmd/storage.go)" >&2
+    exit 2
+    ;;
+  help|-h|--help|"")
+    echo "gcs commands (gcloud-lite backend):"
+    echo "  ls               バケット一覧"
+    echo "  ls BUCKET        バケット内オブジェクト一覧"
+    echo ""
+    echo "not implemented in gcl (see aktus-tk/gcp):"
+    echo "  cp / rm"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl gcs help" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  zones)
+    exec gcl dns zones "$@"
+    ;;
+  records|record-sets)
+    exec gcl dns records "$@"
+    ;;
+  help|-h|--help|"")
+    echo "dns commands (gcloud-lite backend):"
+    echo "  zones            マネージドゾーン一覧"
+    echo "  records [ZONE]   レコードセット一覧"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gcl dns help" >&2
+    exit 1
+    ;;
+esac
