@@ -23,7 +23,7 @@ cos_load_creds() {
   fi
 
   if [[ -z "${COS_REGION:-}" ]]; then
-    COS_REGION="${TENCENTCLOUD_REGION:-}"
+    COS_REGION="${CLOUD_CLI_TCCLI_REGION:-${TENCENTCLOUD_REGION:-}}"
   fi
   if [[ -z "$COS_REGION" && -f "$conf_file" ]]; then
     COS_REGION="$(jq -r '._sys_param.region // empty' "$conf_file")"
@@ -292,10 +292,10 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     echo "cos commands (Tencent Cloud Object Storage):"
-    echo "  ls [--csv]                        バケット一覧"
-    echo "  ls BUCKET [--csv]                 バケット内のオブジェクト一覧"
-    echo "  create BUCKET [--region REGION]   バケット作成 (AppId は省略時に自動付与)"
-    echo "  delete BUCKET [--region REGION]   空のバケットを削除"
+    echo "  ls [--csv]                         バケット一覧"
+    echo "  ls BUCKET [--csv]                  バケット内のオブジェクト一覧"
+    echo "  create BUCKET [--region REGION]    バケット作成 (AppId は省略時に自動付与)"
+    echo "  delete BUCKET [--region REGION]    空のバケットを削除"
     echo
     echo "認証: TENCENTCLOUD_SECRET_ID/SECRET_KEY、または ~/.tccli/\$TCCLI_PROFILE.credential を使用する"
     echo "リージョン: TENCENTCLOUD_REGION、または tccli configure の region が既定"

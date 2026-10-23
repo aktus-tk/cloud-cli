@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -e
+
+usage() {
+  cat <<EOF
+usage: tcclit open [SERVICE | --servicemap]
+
+tc-assume 経由で Tencent Cloud コンソールを開く。
+
+TENCENTCLOUD_PROFILE が必要（例: プロジェクトディレクトリの direnv .envrc）。
+
+examples:
+  tcclit open .                        デフォルトのコンソールを開く
+  tcclit open cvm                      CVM コンソールを開く
+  tcclit open -s cos                   COS コンソールを開く (tc-assume のフラグ)
+  tcclit open --servicemap             利用可能なサービス一覧
+
+tc-assume の設定は docs/tccli.md を参照。
+EOF
+}
+
+require_tc_assume() {
+  if ! command -v tc-assume >/dev/null 2>&1; then
+    echo "tcclit open: tc-assume not found on PATH" >&2
+    exit 1
+  fi
+}
+
+require_profile() {
+  if [[ -z "${TENCENTCLOUD_PROFILE:-}" ]]; then
+    echo "TENCENTCLOUD_PROFILE is not set (use direnv or export TENCENTCLOUD_PROFILE=...)" >&2
+    exit 1
+  fi
+}
+
+open_run() {
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf 'tc-assume open'
+    for _a in "$@"; do
+      printf ' %q' "$_a"
+    done
+    printf '\n'
+    exit 0
+  fi
+  exec tc-assume open "$@"
+}
+
+case "${1:-}" in
+  help|--help|-h)
+    usage
+    ;;
+  --servicemap)
+    require_tc_assume
+    open_run --servicemap
+    ;;
+  .)
+    shift || true
+    require_profile
+    require_tc_assume
+    open_run "$@"
+    ;;
+  -*)
+    require_profile
+    require_tc_assume
+    open_run "$@"
+    ;;
+  "")
+    usage
+    ;;
+  *)
+    require_profile
+    require_tc_assume
+    open_run -s "$1" "${@:2}"
+    ;;
+esac

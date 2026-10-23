@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<'EOF'
+usage: awst resources <command> [options]
+
+AWS Resource Explorer 2（読み取り専用）。アカウント横断のリソース一覧・検索。
+aggregator リージョンの default view を使う（--view-arn で上書き可）。
+
+commands:
+  ls [options]              aws resource-explorer-2 list-resources 相当
+  search [options] [SPEC]   aws resource-explorer-2 search 相当（最大 1,000 件）
+  regions [options] [SPEC]  検索にヒットしたリソースが存在するリージョン一覧（件数付き）
+
+ls options:
+  --filter STRING          list-resources の FilterString（例: service:ec2）
+  --view-arn ARN           使用する view ARN
+  --csv / --json           出力形式（default: 表）
+
+search / regions のクエリ（いずれか 1 つ）:
+  --query-string STRING    そのまま渡す（例: resourcetype:ec2:security-group）
+  --type TYPE              リソースタイプ（ec2:security-group → resourcetype:ec2:security-group）
+  --service NAME           service:NAME
+  SPEC                     位置引数 1 個（--type / --service と同じ解釈）
+
+TYPE / SPEC の省略形:
+  sg                       resourcetype:ec2:security-group
+  ec2, rds, s3, lambda     service:NAME
+  ec2:instance など       resourcetype:ec2:instance
+
+search options:
+  --view-arn ARN
+  --csv / --json
+
+regions options:
+  search と同じクエリ指定 + --csv / --json（default: Region と Count の表）
+
+examples:
+  awst resources ls
+  awst resources ls --filter 'service:ec2' --csv
+  awst resources search --type ec2:security-group
+  awst resources search --query-string 'resourcetype:ec2:security-group'
+  awst resources regions sg
+  awst resources regions --service ec2
+
+ls / search 出力列:
+  Service, ResourceType, Region, Name, Arn
+  Name … Properties[].Name が tags のとき、Data 内 Key=Name の Value（SG 名など）
+
+注意:
+  Resource Explorer が有効なリージョン・view のみ対象。結果はインデックス更新の遅延あり。
+  search は API 上限で 1,000 件まで。awst --debug 時は aws コマンドのみ表示。
+EOF
+}
+
+# jq fragment: display name from Resource Explorer Properties (tags → Key Name)
+RESOURCES_JQ='def resource_display_name:
+  (
+    [(.Properties // [])[]
+     | select(.Name == "tags")
+     | (.Data // [])[]
+     | select(.Key == "Name")
+     | .Value][0]
+  ) // "";
+def resource_row:
+  {
+    Service: (.Service // ""),
+    ResourceType: (.ResourceType // ""),
+    Region: (.Region // ""),
+    Name: resource_display_name,
+    Arn: (.Arn // "")
+  };'
+
+resources_debug_print_and_exit() {
+  printf '%q ' aws resource-explorer-2 "$@"
+  echo
+  exit 0
+}
+
+resources_re2() {
+  aws resource-explorer-2 "$@"
+}
+
+resources_query_from_spec() {
+  local spec="$1"
+  case "$spec" in
+    sg) printf '%s' 'resourcetype:ec2:security-group' ;;
+    ec2|rds|s3|lambda|dynamodb|ecs|eks|iam|cloudfront|route53|elasticache)
+      printf 'service:%s' "$spec"
+      ;;
+    resourcetype:*|service:*) printf '%s' "$spec" ;;
+    *:*)
+      printf 'resourcetype:%s' "$spec"
+      ;;
+    *)
+      printf 'service:%s' "$spec"
+      ;;
+  esac
+}
+
+resources_parse_query_args() {
+  query_string=""
+  query_type=""
+  query_service=""
+  positional=""
+  view_arn=""
+  output="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --query-string)
+        query_string="$2"
+        shift 2
+        ;;
+      --type)
+        query_type="$2"
+        shift 2
+        ;;
+      --service)
+        query_service="$2"
+        shift 2
+        ;;
+      --view-arn)
+        view_arn="$2"
+        shift 2
+        ;;
+      --csv)
+        output="csv"
+        shift
+        ;;
+      --json)
+        output="json"
+        shift
+        ;;
+      --filter)
+        echo "option --filter is for awst resources ls only (awst resources help)" >&2
+        exit 1
+        ;;
+      -*)
+        echo "unknown option: $1" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -n "$positional" ]]; then
+          echo "unexpected argument: $1" >&2
+          exit 1
+        fi
+        positional="$1"
+        shift
+        ;;
+    esac
+  done
+
+  local n=0
+  [[ -n "$query_string" ]] && n=$((n + 1))
+  [[ -n "$query_type" ]] && n=$((n + 1))
+  [[ -n "$query_service" ]] && n=$((n + 1))
+  [[ -n "$positional" ]] && n=$((n + 1))
+
+  if [[ "$n" -eq 0 ]]; then
+    echo "query required: --query-string, --type, --service, or positional SPEC (awst resources help)" >&2
+    exit 1
+  fi
+  if [[ "$n" -gt 1 ]]; then
+    echo "specify only one of --query-string, --type, --service, or positional SPEC" >&2
+    exit 1
+  fi
+
+  if [[ -n "$query_string" ]]; then
+    RESOURCES_QUERY="$query_string"
+  elif [[ -n "$query_type" ]]; then
+    RESOURCES_QUERY="$(resources_query_from_spec "$query_type")"
+  elif [[ -n "$query_service" ]]; then
+    RESOURCES_QUERY="service:${query_service}"
+  else
+    RESOURCES_QUERY="$(resources_query_from_spec "$positional")"
+  fi
+}
+
+resources_search_cmd() {
+  local query="$1"
+  local view_arn="${2:-}"
+  RESOURCES_AWS_CMD=(search --query-string "$query" --output json)
+  if [[ -n "$view_arn" ]]; then
+    RESOURCES_AWS_CMD+=(--view-arn "$view_arn")
+  fi
+}
+
+resources_resources_csv() {
+  local json="$1"
+  echo "Service,ResourceType,Region,Name,Arn"
+  echo "$json" | jq -r "$RESOURCES_JQ"'
+    [.Resources[]? | resource_row]
+    | sort_by(.Region, .Service, .ResourceType, .Name, .Arn)
+    | .[]
+    | [.Service, .ResourceType, .Region, .Name, .Arn]
+    | @tsv
+  ' | tr '\t' ','
+}
+
+resources_emit_resources() {
+  local json="$1"
+  local output="$2"
+
+  case "$output" in
+    json)
+      echo "$json" | jq "$RESOURCES_JQ"'
+        [.Resources[]? | resource_row]
+        | sort_by(.Region, .Service, .ResourceType, .Name, .Arn)
+      '
+      ;;
+    csv)
+      resources_resources_csv "$json"
+      ;;
+    table)
+      resources_resources_csv "$json" | column -s, -t
+      ;;
+  esac
+}
+
+resources_regions_csv() {
+  local json="$1"
+  echo "Region,Count"
+  echo "$json" | jq -r '
+    [.Resources[]?.Region // empty]
+    | group_by(.)
+    | map({Region: .[0], Count: length})
+    | sort_by(.Region)
+    | .[]
+    | [.Region, (.Count | tostring)]
+    | @tsv
+  ' | tr '\t' ','
+}
+
+resources_emit_regions() {
+  local json="$1"
+  local output="$2"
+
+  case "$output" in
+    json)
+      echo "$json" | jq '
+        [.Resources[]?.Region // empty]
+        | group_by(.)
+        | map({Region: .[0], Count: length})
+        | sort_by(.Region)
+      '
+      ;;
+    csv)
+      resources_regions_csv "$json"
+      ;;
+    table)
+      resources_regions_csv "$json" | column -s, -t
+      ;;
+  esac
+}
+
+resources_ls() {
+  local filter_string=""
+  local view_arn=""
+  local output="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --filter)
+        filter_string="$2"
+        shift 2
+        ;;
+      --view-arn)
+        view_arn="$2"
+        shift 2
+        ;;
+      --csv)
+        output="csv"
+        shift
+        ;;
+      --json)
+        output="json"
+        shift
+        ;;
+      *)
+        echo "unknown option: $1 (awst resources help)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local -a cmd=(list-resources --output json)
+  if [[ -n "$filter_string" ]]; then
+    cmd+=(--filters "FilterString=${filter_string}")
+  fi
+  if [[ -n "$view_arn" ]]; then
+    cmd+=(--view-arn "$view_arn")
+  fi
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    resources_debug_print_and_exit "${cmd[@]}"
+  fi
+
+  local json
+  json="$(resources_re2 "${cmd[@]}")"
+  resources_emit_resources "$json" "$output"
+}
+
+resources_search() {
+  resources_parse_query_args "$@"
+  resources_search_cmd "$RESOURCES_QUERY" "$view_arn"
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    resources_debug_print_and_exit "${RESOURCES_AWS_CMD[@]}"
+  fi
+  local json
+  json="$(resources_re2 "${RESOURCES_AWS_CMD[@]}")"
+  resources_emit_resources "$json" "$output"
+}
+
+resources_regions() {
+  resources_parse_query_args "$@"
+  resources_search_cmd "$RESOURCES_QUERY" "$view_arn"
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    resources_debug_print_and_exit "${RESOURCES_AWS_CMD[@]}"
+  fi
+  local json
+  json="$(resources_re2 "${RESOURCES_AWS_CMD[@]}")"
+  resources_emit_regions "$json" "$output"
+}
+
+case "$sub" in
+  ls|list)
+    resources_ls "$@"
+    ;;
+  search)
+    resources_search "$@"
+    ;;
+  regions)
+    resources_regions "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown resources command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

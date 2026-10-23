@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<'EOF'
+usage: awst ce <command> [options]
+
+AWS Cost Explorer（読み取り専用）。請求 API から調査用の一覧を取る。
+月次・日次の内訳は awst billing を使う。
+
+commands:
+  regions [options]    指定期間でコストが 0 以外の AWS リージョンを列挙
+
+regions の目的:
+  「このアカウントでお金がかかっているリージョンはどこか」を短く知る。
+  全リージョン横断の EC2 / SG 確認など、調査対象リージョンの絞り込みに使う。
+  内部で aws ce get-cost-and-usage を REGION 別に集計している。
+
+regions options:
+  --days N             今日から遡る日数（default: 30）。集計期間は N 日前の日付〜今日
+  --granularity G      集計の区切り: MONTHLY（月）または DAILY（日）（default: MONTHLY）
+  --metric M           Cost Explorer のメトリクス（default: UnblendedCost）
+                         UnblendedCost     未ブレンド（一般的なリージョン別コスト）
+                         NetUnblendedCost  税前実質（awst billing のサービス別 Amount に近い）
+                         BlendedCost       RI/SP 割引後（請求総計に近い）
+  --by-period          月（または日）ごとに 1 行。行内はリージョン名をタブ区切り
+  --include-non-regional
+                       global（CloudFront 等）と NoRegion も含める（default: 除外）
+  --csv                ヘッダ付き CSV（Region 列）。リージョンは重複除去・ソート
+  --json               JSON。--by-period なしはリージョン名の配列、ありは期間ごとのオブジェクト
+
+regions 出力（デフォルトは --csv/--json なし）:
+  通常              期間全体で 1 度でもコストがあったリージョンを、1 行 1 リージョン（ソート済）
+  --by-period       時間バケットごとに 1 行（例: MONTHLY なら「2026-02-01 開始の月」が 1 行）
+                    行の例:  ap-northeast-1<TAB>us-east-1
+  コスト 0 のリージョンは出さない。
+
+examples:
+  awst ce regions
+  awst ce regions --days 30 --by-period
+  awst ce regions --granularity DAILY --days 14
+  awst ce regions --metric NetUnblendedCost --csv
+
+注意:
+  Cost Explorer は 24〜48 時間遅れ。直近数日は暫定値になりやすい。
+  awst --debug 実行時は aws ce コマンドのみ表示（API は呼ばない）。
+EOF
+}
+
+ce_date_ago() {
+  local days="$1"
+  date -d "${days} days ago" +%Y-%m-%d
+}
+
+ce_today() {
+  date +%Y-%m-%d
+}
+
+ce_run_get_cost_and_usage() {
+  local start="$1"
+  local end="$2"
+  local granularity="$3"
+  local metric="$4"
+
+  local -a cmd=(
+    aws ce get-cost-and-usage
+    --time-period "Start=${start},End=${end}"
+    --granularity "$granularity"
+    --metrics "$metric"
+    --group-by "Type=DIMENSION,Key=REGION"
+    --output json
+  )
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  "${cmd[@]}"
+}
+
+ce_regions() {
+  local days=30
+  local granularity="MONTHLY"
+  local metric="UnblendedCost"
+  local output="lines"
+  local by_period=0
+  local include_non_regional=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --days)
+        days="$2"
+        shift 2
+        ;;
+      --granularity)
+        granularity="$2"
+        shift 2
+        ;;
+      --metric)
+        metric="$2"
+        shift 2
+        ;;
+      --by-period)
+        by_period=1
+        shift
+        ;;
+      --include-non-regional)
+        include_non_regional=1
+        shift
+        ;;
+      --csv)
+        output="csv"
+        shift
+        ;;
+      --json)
+        output="json"
+        shift
+        ;;
+      *)
+        echo "unknown option: $1 (awst ce help で regions の説明を表示)" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  case "$granularity" in
+    MONTHLY|DAILY) ;;
+    *)
+      echo "granularity must be MONTHLY or DAILY: $granularity" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$metric" in
+    UnblendedCost|NetUnblendedCost|BlendedCost) ;;
+    *)
+      echo "metric must be UnblendedCost, NetUnblendedCost, or BlendedCost: $metric" >&2
+      exit 1
+      ;;
+  esac
+
+  if ! [[ "$days" =~ ^[0-9]+$ ]] || [[ "$days" -lt 1 ]]; then
+    echo "--days must be a positive integer: $days" >&2
+    exit 1
+  fi
+
+  local start end json
+  start="$(ce_date_ago "$days")"
+  end="$(ce_today)"
+  json="$(ce_run_get_cost_and_usage "$start" "$end" "$granularity" "$metric")"
+
+  if [[ "$by_period" -eq 1 ]]; then
+    if [[ "$output" == "json" ]]; then
+      echo "$json" | jq --arg m "$metric" --argjson inc "$include_non_regional" '
+        def keep($r):
+          if $inc == 1 then true else ($r != "global" and $r != "NoRegion") end;
+        [.ResultsByTime[] | {
+          start: .TimePeriod.Start,
+          end: .TimePeriod.End,
+          regions: [
+            .Groups[]
+            | select((.Metrics[$m].Amount | tonumber) != 0)
+            | .Keys[0]
+            | select(keep(.))
+          ]
+        }]
+      '
+      return 0
+    fi
+    echo "$json" | jq -r --arg m "$metric" --argjson inc "$include_non_regional" '
+      def keep($r):
+        if $inc == 1 then true else ($r != "global" and $r != "NoRegion") end;
+      .ResultsByTime[] |
+      [
+        .Groups[]
+        | select((.Metrics[$m].Amount | tonumber) != 0)
+        | .Keys[0]
+        | select(keep(.))
+      ] | join("\t")
+    '
+    return 0
+  fi
+
+  if [[ "$output" == "json" ]]; then
+    echo "$json" | jq --arg m "$metric" --argjson inc "$include_non_regional" '
+      def keep($r):
+        if $inc == 1 then true else ($r != "global" and $r != "NoRegion") end;
+      [
+        .ResultsByTime[].Groups[]
+        | select((.Metrics[$m].Amount | tonumber) != 0)
+        | .Keys[0]
+        | select(keep(.))
+      ] | unique | sort
+    '
+    return 0
+  fi
+
+  if [[ "$output" == "csv" ]]; then
+    echo "Region"
+    echo "$json" | jq -r --arg m "$metric" --argjson inc "$include_non_regional" '
+      def keep($r):
+        if $inc == 1 then true else ($r != "global" and $r != "NoRegion") end;
+      [
+        .ResultsByTime[].Groups[]
+        | select((.Metrics[$m].Amount | tonumber) != 0)
+        | .Keys[0]
+        | select(keep(.))
+      ] | unique | sort | .[]
+    '
+    return 0
+  fi
+
+  echo "$json" | jq -r --arg m "$metric" --argjson inc "$include_non_regional" '
+    def keep($r):
+      if $inc == 1 then true else ($r != "global" and $r != "NoRegion") end;
+    [
+      .ResultsByTime[].Groups[]
+      | select((.Metrics[$m].Amount | tonumber) != 0)
+      | .Keys[0]
+      | select(keep(.))
+    ] | unique | sort | .[]
+  '
+}
+
+case "$sub" in
+  regions)
+    ce_regions "$@"
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    echo "unknown ce command: $sub" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

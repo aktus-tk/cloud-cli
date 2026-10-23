@@ -39,6 +39,11 @@ cvm_ls () {
    tccli cvm DescribeInstances --Limit 100 | jq -r '.InstanceSet | sort_by(.InstanceName) | .[] | [.InstanceName,.Placement.Zone,.InstanceId,.InstanceType,.InstanceState,.CPU,.Memory,.PrivateIpAddresses[0],.PublicIpAddresses[0],.VirtualPrivateCloud.VpcId,.VirtualPrivateCloud.SubnetId,.OsName,.SecurityGroupIds[0],(.SystemDisk.DiskType + ":" + (.SystemDisk.DiskSize | tostring)),([.DataDisks[]? | .DiskType + ":" + (.DiskSize | tostring)] | join(";"))] | @csv'
 }
 
+cvm_regions () {
+  tccli cvm DescribeRegions --cli-unfold-argument --filter 'RegionSet[*].Region' \
+    | jq -r '.[]'
+}
+
 cvm_types () {
   echo "InstanceType,Family,CPU,Memory(GB),GPU,FPGA,Status"
   tccli cvm DescribeInstanceTypeConfigs --output json | jq -r '.InstanceTypeConfigSet[]? | [
@@ -67,6 +72,9 @@ case "$cmd" in
       cvm_types | column -t -s $','
     fi
     ;;
+  regions)
+    cvm_regions
+    ;;
   start)
     id=$(cvm_get_id "$1")
     [[ -n "$id" ]] || { echo "no instance: $1" >&2; exit 1; }
@@ -92,6 +100,7 @@ case "$cmd" in
     echo "  ls --csv   CSV 出力"
     echo "  types      利用可能なインスタンスタイプ一覧 (DescribeInstanceTypeConfigs)"
     echo "  types --csv CSV 出力"
+    echo "  regions    CVM のリージョン ID 一覧 (DescribeRegions)"
     echo "  start NAME インスタンス起動 (instance-name またはタグ Name で指定)"
     echo "  stop NAME  インスタンス停止"
     ;;

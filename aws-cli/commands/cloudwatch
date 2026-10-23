@@ -12,6 +12,17 @@ usage: awst cloudwatch <command> [args]
 Amazon CloudWatch (aws cloudwatch / aws logs)
 
 commands:
+  logs [--csv] [--prefix PREFIX]                       ロググループ一覧
+  tail <log-group> [--since T] [--follow]              最新ログ取得
+           [--pattern P] [--format F]
+  query <log-group>... -q QS [--since T] [--to T]      Logs Insights 検索
+           [--csv] [--json] [--timeout SEC]
+  metrics [--csv] [--json] [--namespace NS]            メトリクス一覧
+  stat <ns> <metric> [--dim Name=Value]...             メトリクス統計取得
+           [--start T] [--to T] [--period SEC]
+           [--stat S1,S2] [--csv] [--json]
+  alarms [--csv] [--prefix PREFIX] [--state STATE]     アラーム一覧
+  alarm <name> [--json]                                アラームの詳細
   alarm ls [--csv] [--prefix PREFIX] [--state STATE]   アラーム一覧
   alarm show <name> [--json]                           アラームの詳細
   log ls [--csv] [--prefix PREFIX]                     ロググループ一覧
@@ -19,27 +30,55 @@ commands:
   stream ls <log-group> [--csv]                        ログストリーム一覧
 
 abbreviations:
-  alarm  -> al, a
-  log    -> lg, l
-  stream -> st, s
+  alarm  -> al, a, alarms
+  log    -> lg, l, logs
+    stream -> st, s
+  metrics -> metric
+  stat -> stats, statistics
+
+time format (--since / --to):
+  10m / 2h / 1d (相対) / 1739433600 (epoch) / ISO8601
 
 examples:
-  awst cw al ls
-  awst cw al ls --csv --state ALARM
-  awst cw a show my-alarm
-  awst cloudwatch lg ls --prefix /aws/lambda/
-  awst cw l show /aws/lambda/my-fn
+  awst cw logs --prefix /aws/lambda/
+  awst cw tail /aws/lambda/my-fn --since 30m --follow
+  awst cw query /aws/lambda/my-fn -q 'fields @timestamp, @message | limit 20' --since 3h
+  awst cw metrics --namespace AWS/EC2 --csv
+  awst cw stat AWS/ApplicationELB RequestCount \
+    --dim LoadBalancer=app/my-alb/abc123 --start 14d --period 86400 --stat Sum
+  awst cw stat AWS/EC2 CPUUtilization --dim InstanceId=i-xxxx --stat Average --csv
+  awst cw alarms --state ALARM
+  awst cw alarm my-alarm
+  awst cw al ls --csv
   awst cw st ls /aws/lambda/my-fn
 EOF
 }
 
 cw_resolve_sub() {
   case "$1" in
-    alarm|al|a) printf '%s' "alarm" ;;
-    log|lg|l) printf '%s' "log" ;;
+    alarm|al|a|alarms) printf '%s' "alarm" ;;
+    log|lg|l|logs) printf '%s' "log" ;;
     stream|st|s) printf '%s' "stream" ;;
+    metrics|metric) printf '%s' "metrics" ;;
+    stat|stats|statistics) printf '%s' "stat" ;;
+    tail|query) printf '%s' "$1" ;;
     *) printf '%s' "$1" ;;
   esac
+}
+
+# --since / --to の値を epoch 秒へ変換
+# 10m / 2h / 1d (相対) | epoch | それ以外は date -d で解釈
+cw_epoch() {
+  local v="$1"
+  if [[ "$v" =~ ^[0-9]+[smhd]$ ]]; then
+    local n="${v%[smhd]}" u="${v: -1}" sec=1
+    case "$u" in m) sec=60 ;; h) sec=3600 ;; d) sec=86400 ;; esac
+    echo $(( $(date +%s) - n * sec ))
+  elif [[ "$v" =~ ^[0-9]+$ ]]; then
+    echo "$v"
+  else
+    date -d "$v" +%s
+  fi
 }
 
 alarm_ls_csv() {
@@ -221,12 +260,252 @@ stream_ls_csv() {
   ' | tr '\t' ','
 }
 
+log_tail() {
+  local group="${1:-}"
+  shift || true
+  if [[ -z "$group" ]]; then
+    echo "usage: awst cloudwatch tail <log-group> [--since T] [--follow] [--pattern P] [--format F]" >&2
+    exit 1
+  fi
+
+  local since="10m" follow=0 pattern="" format=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --since) since="$2"; shift 2 ;;
+      --follow|-f) follow=1; shift ;;
+      --pattern) pattern="$2"; shift 2 ;;
+      --format) format="$2"; shift 2 ;;
+      *)
+        echo "unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local args=(--since "$since")
+  [[ "$follow" -eq 1 ]] && args+=(--follow)
+  [[ -n "$pattern" ]] && args+=(--filter-pattern "$pattern")
+  [[ -n "$format" ]] && args+=(--format "$format")
+
+  exec aws logs tail "$group" "${args[@]}"
+}
+
+cw_query() {
+  local groups=() qs="" since="1h" to="" fmt="table" timeout=60
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --query-string|-q) qs="$2"; shift 2 ;;
+      --since) since="$2"; shift 2 ;;
+      --to) to="$2"; shift 2 ;;
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      --timeout) timeout="$2"; shift 2 ;;
+      *) groups+=("$1"); shift ;;
+    esac
+  done
+
+  if [[ ${#groups[@]} -eq 0 || -z "$qs" ]]; then
+    echo "usage: awst cloudwatch query <log-group>... --query-string QS [--since T] [--to T] [--csv] [--json] [--timeout SEC]" >&2
+    exit 1
+  fi
+
+  local start end
+  start="$(cw_epoch "$since")"
+  if [[ -n "$to" ]]; then
+    end="$(cw_epoch "$to")"
+  else
+    end="$(date +%s)"
+  fi
+
+  local qid res status elapsed=0
+  qid="$(aws logs start-query \
+    --log-group-names "${groups[@]}" \
+    --start-time "$start" \
+    --end-time "$end" \
+    --query-string "$qs" \
+    --output json | jq -r .queryId)" || exit 1
+
+  if [[ -z "$qid" || "$qid" == "null" ]]; then
+    echo "cw: failed to start query" >&2
+    exit 1
+  fi
+
+  while :; do
+    sleep 1
+    if ! res="$(aws logs get-query-results --query-id "$qid" --output json)"; then
+      echo "cw: get-query-results failed (queryId: $qid)" >&2
+      exit 1
+    fi
+    status="$(echo "$res" | jq -r .status)"
+    case "$status" in
+      Complete) break ;;
+      Failed|Cancelled)
+        echo "cw: query $status" >&2
+        echo "$res" | jq '.statistics // empty' >&2
+        exit 1
+        ;;
+    esac
+    if [[ "$elapsed" -ge "$timeout" ]]; then
+      aws logs stop-query --query-id "$qid" >/dev/null 2>&1 || true
+      echo "cw: query timed out after ${timeout}s (queryId: $qid, cancelled)" >&2
+      exit 1
+    fi
+    elapsed=$((elapsed + 1))
+  done
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$res" | jq .
+    return 0
+  fi
+
+  # CSV / テーブル共通: ヘッダは先頭行の field、値は @csv
+  if [[ "$(echo "$res" | jq '.results | length')" -eq 0 ]]; then
+    echo "no results" >&2
+    return 0
+  fi
+
+  echo "$res" | jq -r '.results[0][] | .field' | paste -sd, -
+  echo "$res" | jq -r '.results[] | map(.value) | @csv'
+}
+
+cw_stat() {
+  local ns="" metric="" period=300 stats="Average" start="1h" to="" fmt="table"
+  local dims=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dim) dims+=("$2"); shift 2 ;;
+      --start|--since) start="$2"; shift 2 ;;
+      --to|--end) to="$2"; shift 2 ;;
+      --period) period="$2"; shift 2 ;;
+      --stat) stats="$2"; shift 2 ;;
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        if [[ -z "$ns" ]]; then
+          ns="$1"
+        elif [[ -z "$metric" ]]; then
+          metric="$1"
+        else
+          echo "unknown option: $1" >&2
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$ns" || -z "$metric" ]]; then
+    echo "usage: awst cloudwatch stat <namespace> <metric> [--dim Name=Value]... [--start T] [--to T] [--period SEC] [--stat S1,S2] [--csv] [--json]" >&2
+    exit 1
+  fi
+
+  local dim_args=()
+  local d
+  for d in "${dims[@]}"; do
+    # Name=Value -> Name=<name>,Value=<value> (AWS shorthand 形式)
+    dim_args+=("Name=${d%%=*},Value=${d#*=}")
+  done
+
+  local args=(--namespace "$ns" --metric-name "$metric" --period "$period")
+  if [[ ${#dim_args[@]} -gt 0 ]]; then
+    args+=(--dimensions "${dim_args[@]}")
+  fi
+  local stat_args=()
+  local IFS=','
+  read -ra stat_args <<< "$stats"
+  unset IFS
+  args+=(--statistics "${stat_args[@]}")
+  args+=(--start-time "$(date -u -d "@$(cw_epoch "$start")" +%Y-%m-%dT%H:%M:%SZ)")
+  args+=(--end-time "$(date -u -d "@$(cw_epoch "${to:-now}")" +%Y-%m-%dT%H:%M:%SZ)")
+
+  local json
+  json="$(aws cloudwatch get-metric-statistics "${args[@]}" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  local jq_stats
+  jq_stats="$(printf '%s\n' "${stat_args[@]}" | jq -R . | jq -s .)"
+
+  {
+    local header="Timestamp"
+    local s
+    for s in "${stat_args[@],,}"; do
+      header+=",$s"
+    done
+    echo "$header"
+    echo "$json" | jq -r --argjson stats "$jq_stats" '
+      .Datapoints | sort_by(.Timestamp) | .[] |
+      [.Timestamp] + ([.[$stats[]] // "-"])
+      | @tsv
+    ' | tr '\t' ','
+  } | {
+    if [[ "$fmt" == "csv" ]]; then
+      cat
+    else
+      column -s, -t
+    fi
+  }
+}
+
+metrics_ls() {
+  local ns="" fmt="table"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --namespace) ns="$2"; shift 2 ;;
+      --csv) fmt="csv"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)
+        echo "unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local args=()
+  [[ -n "$ns" ]] && args+=(--namespace "$ns")
+
+  local json
+  json="$(aws cloudwatch list-metrics "${args[@]}" --output json)"
+
+  if [[ "$fmt" == "json" ]]; then
+    echo "$json" | jq .
+    return 0
+  fi
+
+  {
+    echo "Namespace,MetricName,Dimensions"
+    echo "$json" | jq -r '
+      .Metrics[]? |
+      [
+        .Namespace,
+        .MetricName,
+        ([.Dimensions[]? | "\(.Name)=\(.Value)"] | join(";"))
+      ] | @tsv
+    ' | tr '\t' ','
+  } | {
+    if [[ "$fmt" == "csv" ]]; then
+      cat
+    else
+      column -s, -t
+    fi
+  }
+}
+
 case "$(cw_resolve_sub "$sub")" in
   alarm)
     alarm_cmd="${1:-}"
-    shift || true
-    case "$alarm_cmd" in
-      ls|list)
+    # awst cw alarm <name> / alarms の省略形をサポート
+    if [[ -n "$alarm_cmd" && ! "$alarm_cmd" =~ ^(-|ls|list|show|describe) ]]; then
+      alarm_show "$@"
+    else
+      case "$alarm_cmd" in
+        ls|list|show|describe) shift || true ;;
+      esac
+      case "$alarm_cmd" in
+        ""|ls|list|-*)
         csv=0
         args=()
         while [[ $# -gt 0 ]]; do
@@ -245,17 +524,21 @@ case "$(cw_resolve_sub "$sub")" in
         alarm_show "$@"
         ;;
       *)
-        echo "alarm commands (al, a):"
+        echo "alarm commands (al, a, alarms):"
         echo "  ls [--csv] [--prefix PREFIX] [--state STATE]"
-        echo "  show <name> [--json]"
+        echo "  show <name> [--json]  (awst cw alarm <name> でも可)"
         ;;
-    esac
+      esac
+    fi
     ;;
   log)
     log_cmd="${1:-}"
-    shift || true
+    # awst cw logs / log ls の省略形をサポート
     case "$log_cmd" in
-      ls|list)
+      ls|list|show|describe) shift || true ;;
+    esac
+    case "$log_cmd" in
+      ""|ls|list|-*)
         csv=0
         args=()
         while [[ $# -gt 0 ]]; do
@@ -273,12 +556,27 @@ case "$(cw_resolve_sub "$sub")" in
       show|describe)
         log_show "$@"
         ;;
+      show|describe)
+        log_show "$@"
+        ;;
       *)
-        echo "log commands (lg, l):"
-        echo "  ls [--csv] [--prefix PREFIX]"
+        echo "log commands (lg, l, logs):"
+        echo "  ls [--csv] [--prefix PREFIX]  (awst cw logs でも可)"
         echo "  show <log-group-name> [--json]"
         ;;
     esac
+    ;;
+  tail)
+    log_tail "$@"
+    ;;
+  query)
+    cw_query "$@"
+    ;;
+  metrics)
+    metrics_ls "$@"
+    ;;
+  stat)
+    cw_stat "$@"
     ;;
   stream)
     stream_cmd="${1:-}"

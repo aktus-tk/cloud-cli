@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 set -e
 
+_lib="$(dirname "$0")/_lib"
+# shellcheck source=_lib/ec2_regions.sh
+source "${_lib}/ec2_regions.sh"
+
 cmd=$1
 shift
 
 ec2_get_id () {
 local name=$1
 aws ec2 describe-instances --filters "Name=tag:Name,Values=$name" --query "Reservations[].Instances[].InstanceId" --output text
+}
+
+ec2_regions() {
+  if [[ "${1:-}" == "--csv" ]]; then
+    echo "Region"
+  fi
+  aws_ec2_enabled_regions_list
 }
 
 ec2_ls_csv  () {
@@ -546,6 +557,9 @@ case "$cmd" in
       ec2_types_csv "$@" | column -s, -t
     fi
   ;;
+  regions)
+    ec2_regions "$@"
+  ;;
   start)
     id=$(ec2_get_id "$1")
     if [[ -n "$DEBUG" ]]; then
@@ -657,6 +671,7 @@ case "$cmd" in
     echo "  ls --csv   インスタンス一覧（CSV）"
     echo "  show INSTANCE_ID"
     echo "  types [TYPE...] [--x86_64|--arm64] [--csv]  インスタンスタイプ一覧"
+    echo "  regions [--csv]  このアカウントで有効な EC2 リージョン（describe-regions）"
     echo "  ssh NAME"
     echo "  start NAME"
     echo "  stop NAME"

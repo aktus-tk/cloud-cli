@@ -1,28 +1,51 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+_lib="$(dirname "$0")/_lib"
+# shellcheck source=_lib/ec2_regions.sh
+source "${_lib}/ec2_regions.sh"
+
 sub="${1:-}"
 shift || true
 
 usage() {
-  cat <<EOF
+  cat <<'EOF'
 usage: awst sg <command> [args]
 
 EC2 セキュリティグループの調査（読み取り専用）。
+一覧・存在確認は awst sg。ルールを CSV で一括ダンプする場合は awst ec2 sg_rules（現リージョンのみ）。
 
 commands:
-  ls                                    SG 一覧（概要）
-  show <sg-id|group-name>               1 つの SG の Inbound / Outbound ルール（人が読む形式）
-  ec2 <instance-name-or-id>             インスタンスにアタッチされている SG
-  alb <alb-name>                        ALB にアタッチされている SG ID
-  check <src> <dst> <port>              src → dst の TCP が論理的に通るか
-  check alb <alb-name> <dst> <port>     src = その ALB の SG 群
+  ls [options]                 SG 一覧（Region / GroupName / GroupId / VpcId / Description / Tags）
+  show <sg-id|group-name>      1 つの SG の Inbound / Outbound ルール（人が読む形式）
+  ec2 <instance-name-or-id>    EC2 インスタンスにアタッチされている SG
+  alb <alb-name>               ALB にアタッチされている SG ID
+  check <src> <dst> <port>     src → dst の TCP が論理的に通るか（SG ルールの組み合わせ）
+  check alb <alb> <dst> <port> src = その ALB の SG 群
 
-論理チェックの意味: src 側 SG のいずれかに dst（SG または 0.0.0.0/0）向けの egress があり、
-かつ dst 側 SG のいずれかに src（SG または 0.0.0.0/0）からの ingress があること（TCP ポート）。
+ls のリージョンの決め方:
+  デフォルト     現在のリージョン 1 つだけ（AWS_REGION / aws configure get region）
+  1 リージョン   awst --region ap-northeast-1 sg ls
+  全リージョン   awst sg ls --all-regions
+                 （awst ec2 regions と同じ describe-regions 一覧を順に問い合わせ。
+                   ヘッダは 1 回。SG が無いリージョンは行なし。失敗リージョンは最後に stderr）
+
+ls options:
+  --all-regions    アカウントで有効な全 EC2 リージョンを横断（Cost Explorer / Resource Explorer は使わない）
+  --csv            CSV 出力（--all-regions と併用可）
+  --detail         SG ごとにルール概要付きブロック（件数が多いと長い）
+
+check の意味:
+  src 側 SG のいずれかに、dst（SG または 0.0.0.0/0）向けの egress があり、
+  かつ dst 側 SG のいずれかに、src（SG または 0.0.0.0/0）からの ingress があり、
+  指定 TCP ポートが許可されていれば ALLOW。
 
 examples:
   awst sg ls
+  awst --region ap-northeast-1 sg ls
+  awst sg ls --all-regions
+  awst sg ls --all-regions --csv
+  awst sg ls --detail
   awst sg show app-sg
   awst sg ec2 web01
   awst sg alb my-alb
@@ -87,18 +110,180 @@ resolve_alb_src_sg_ids() {
     --query 'LoadBalancers[0].SecurityGroups[]' --output text | tr '\t' '\n' | sed '/^$/d'
 }
 
-sg_ls() {
-  echo -e "GroupName\tGroupId\tVpcId\tDescription\tTags"
-  aws ec2 describe-security-groups --output json |
-    jq -r '.SecurityGroups[] |
+sg_effective_region() {
+  if [[ -n "${AWS_REGION:-}" ]]; then
+    printf '%s' "$AWS_REGION"
+    return 0
+  fi
+  if [[ -n "${AWS_DEFAULT_REGION:-}" ]]; then
+    printf '%s' "$AWS_DEFAULT_REGION"
+    return 0
+  fi
+  local configured
+  configured="$(aws configure get region 2>/dev/null || true)"
+  if [[ -n "$configured" ]]; then
+    printf '%s' "$configured"
+    return 0
+  fi
+  printf '%s' ''
+}
+
+sg_ls_print_header() {
+  local detail=$1 csv=$2
+  if [[ "$detail" == true ]]; then
+    return 0
+  fi
+  if [[ "$csv" == true ]]; then
+    echo "Region,GroupName,GroupId,VpcId,Description,Tags"
+  else
+    echo -e "Region\tGroupName\tGroupId\tVpcId\tDescription\tTags"
+  fi
+}
+
+# Emit SG rows for the current AWS_REGION (no table header). Returns non-zero if describe fails.
+sg_ls_emit() {
+  local detail=$1 csv=$2
+  local region
+  region="$(sg_effective_region)"
+
+  local err data
+  err="$(mktemp)"
+  if ! data="$(aws ec2 describe-security-groups --output json 2>"$err")"; then
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+
+  if [[ "$detail" == true ]]; then
+    echo "$data" | jq -c '.SecurityGroups[]' | while read -r sg; do
+      local name gid vpcid desc tags
+      name="$(echo "$sg" | jq -r '.GroupName')"
+      gid="$(echo "$sg" | jq -r '.GroupId')"
+      vpcid="$(echo "$sg" | jq -r '.VpcId')"
+      desc="$(echo "$sg" | jq -r '.Description')"
+      tags="$(echo "$sg" | jq -r '((.Tags // []) | map("\(.Key)=\(.Value)") | join(","))')"
+      echo "---"
+      echo -e "Region\tGroupName\tGroupId\tVpcId\tDescription\tTags"
+      echo -e "$region\t$name\t$gid\t$vpcid\t$desc\t$tags" | column -t -s $'\t'
+      echo ""
+
+      local in_count out_count
+      in_count="$(echo "$sg" | jq '.IpPermissions | length')"
+      out_count="$(echo "$sg" | jq '.IpPermissionsEgress | length')"
+      if [[ "$in_count" -gt 0 ]]; then
+        echo "  Inbound:"
+        echo -e "  Dir\tProto\tPorts\tSource"
+        echo "$sg" | jq -c '.IpPermissions[]?' 2>/dev/null | while read -r row; do
+          [[ -z "$row" ]] && continue
+          echo "$row" | sg_show_one_perm_line "IN"
+        done | column -t -s $'\t' || true
+      fi
+      if [[ "$out_count" -gt 0 ]]; then
+        echo "  Outbound:"
+        echo -e "  Dir\tProto\tPorts\tDestination"
+        echo "$sg" | jq -c '.IpPermissionsEgress[]?' 2>/dev/null | while read -r row; do
+          [[ -z "$row" ]] && continue
+          echo "$row" | sg_show_one_perm_line "OUT"
+        done | column -t -s $'\t' || true
+      fi
+      echo ""
+    done
+  elif [[ "$csv" == true ]]; then
+    echo "$data" | jq -r --arg region "$region" '.SecurityGroups[] |
       [
+        $region,
+        .GroupName,
+        .GroupId,
+        .VpcId,
+        .Description,
+        ((.Tags // []) | map("\(.Key)=\(.Value)") | join(","))
+      ] | @tsv' | tr '\t' ','
+  else
+    echo "$data" | jq -r --arg region "$region" '.SecurityGroups[] |
+      [
+        $region,
         .GroupName,
         .GroupId,
         .VpcId,
         .Description,
         ((.Tags // []) | map("\(.Key)=\(.Value)") | join(","))
       ] | @tsv' |
-    column -t -s $'\t'
+      column -t -s $'\t'
+  fi
+}
+
+sg_ls_all_regions() {
+  local detail=$1 csv=$2
+  local -a failures=()
+  local -a regions=()
+  local regions_err regions_tmp
+
+  regions_tmp="$(mktemp)"
+  regions_err="$(mktemp)"
+  if ! aws_ec2_enabled_regions_list >"$regions_tmp" 2>"$regions_err"; then
+    echo "awst sg ls --all-regions: could not list regions: $(tr '\n' ' ' <"$regions_err")" >&2
+    rm -f "$regions_tmp" "$regions_err"
+    return 1
+  fi
+  rm -f "$regions_err"
+  mapfile -t regions <"$regions_tmp"
+  rm -f "$regions_tmp"
+
+  if [[ "$detail" != true ]]; then
+    sg_ls_print_header "$detail" "$csv"
+  fi
+
+  local reg err_capture err_msg
+  for reg in "${regions[@]}"; do
+    [[ -z "$reg" ]] && continue
+    err_capture="$(mktemp)"
+    if ! AWS_REGION="$reg" AWS_DEFAULT_REGION="$reg" sg_ls_emit "$detail" "$csv" 2>"$err_capture"; then
+      err_msg="$(tr '\n' ' ' <"$err_capture" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/[[:space:]]\+/ /g')"
+      [[ -z "$err_msg" ]] && err_msg="describe-security-groups failed"
+      failures+=("${reg}: ${err_msg}")
+    fi
+    rm -f "$err_capture"
+  done
+
+  if [[ ${#failures[@]} -gt 0 ]]; then
+    echo "awst sg ls --all-regions: failed region(s):" >&2
+    local f
+    for f in "${failures[@]}"; do
+      echo "  $f" >&2
+    done
+    return 1
+  fi
+}
+
+sg_ls() {
+  local detail=false
+  local csv=false
+  local all_regions=false
+  local -a unknown=()
+  for arg in "$@"; do
+    case "$arg" in
+      --detail) detail=true ;;
+      --csv) csv=true ;;
+      --all-regions) all_regions=true ;;
+      -*) unknown+=("$arg") ;;
+      *) unknown+=("$arg") ;;
+    esac
+  done
+
+  if [[ ${#unknown[@]} -gt 0 ]]; then
+    echo "awst sg ls: unknown argument(s): ${unknown[*]}" >&2
+    echo "Usage: awst sg ls [--detail] [--csv] [--all-regions]" >&2
+    return 2
+  fi
+
+  if [[ "$all_regions" == true ]]; then
+    sg_ls_all_regions "$detail" "$csv"
+    return
+  fi
+
+  sg_ls_print_header "$detail" "$csv"
+  sg_ls_emit "$detail" "$csv"
 }
 
 sg_show_one_perm_line() {
@@ -353,7 +538,7 @@ sg_check_alb() {
 
 case "$sub" in
   ls|list)
-    sg_ls
+    sg_ls "$@"
     ;;
   show)
     sg_show "$@"

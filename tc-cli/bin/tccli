@@ -5,8 +5,36 @@ _bin="$(dirname "$(readlink -f "$0")")"
 # shellcheck source=_lib/assume.sh
 source "${_bin}/_lib/assume.sh"
 
+# 引数は削除せずそのまま引き継ぐ。--region は環境変数にも載せ、assume が TENCENTCLOUD_REGION を上書きしても shim が --region を渡せる。
+_orig=("$@")
+_region=""
+_i=0
+while [[ $_i -lt ${#_orig[@]} ]]; do
+  case "${_orig[$_i]}" in
+    --region)
+      _region="${_orig[$_i + 1]:-}"
+      [[ -n "$_region" ]] || { echo "tccli: --region requires a value" >&2; exit 1; }
+      _i=$((_i + 2))
+      ;;
+    --region=*)
+      _region="${_orig[$_i]#--region=}"
+      [[ -n "$_region" ]] || { echo "tccli: --region requires a value" >&2; exit 1; }
+      _i=$((_i + 1))
+      ;;
+    *)
+      _i=$((_i + 1))
+      ;;
+  esac
+done
+set -- "${_orig[@]}"
+
+if [[ -n "$_region" ]]; then
+  export CLOUD_CLI_TCCLI_REGION="$_region"
+fi
+
 if tc_should_assume; then
-  tc_assume_exec "$(tc_real_tccli)" "$@"
+  export CLOUD_CLI_REAL_TCCLI="$(tc_real_tccli)"
+  tc_assume_exec "${_bin}/_shims/tccli" "$@"
 fi
 
 export CLOUD_CLI_REAL_TCCLI="$(tc_real_tccli)"

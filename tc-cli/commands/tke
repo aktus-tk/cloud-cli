@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+tke_ls () {
+  echo "ClusterId,ClusterName,ClusterType,ClusterStatus,ClusterVersion,NodeNum,Created"
+  tccli tke DescribeClusters --output json | jq -r '
+    .Clusters[]? | [
+      .ClusterId,
+      .ClusterName,
+      .ClusterType,
+      .ClusterStatus,
+      (.ClusterVersion // ""),
+      ((.ClusterNodeNum // 0) | tostring),
+      (.CreatedTime // "")
+    ] | @csv'
+}
+
+tke_show () {
+  local id=$1
+  tccli tke DescribeClusters --cli-unfold-argument --ClusterIds "$id" --output json \
+    | jq -r '.Clusters[0] // empty' \
+    | jq -r '
+      "ClusterId:     " + .ClusterId,
+      "ClusterName:   " + (.ClusterName // ""),
+      "Description:   " + (.ClusterDescription // ""),
+      "ClusterType:   " + (.ClusterType // ""),
+      "ClusterStatus: " + (.ClusterStatus // ""),
+      "Version:       " + (.ClusterVersion // ""),
+      "ClusterCIDR:   " + (.ClusterNetworkSettings.ClusterCIDR // ""),
+      "ServiceCIDR:   " + (.ClusterNetworkSettings.ServiceCIDR // ""),
+      "VpcId:         " + (.ClusterNetworkSettings.VpcId // ""),
+      "NodeNum:       " + ((.ClusterNodeNum // 0) | tostring),
+      "ContainerRuntime: " + (.ContainerRuntime // ""),
+      "Created:       " + (.CreatedTime // ""),
+      "Tags:          " + (([.TagSpecification[]?.Tags[]? | .Key + "=" + .Value] | join(", ")) // "")'
+}
+
+tke_nodes () {
+  local id=$1
+  echo "InstanceId,InstanceState,InstanceRole,NodePoolId,LanIP,Created"
+  tccli tke DescribeClusterInstances --cli-unfold-argument --ClusterId "$id" --output json | jq -r '
+    .InstanceSet[]? | [
+      .InstanceId,
+      .InstanceState,
+      (.InstanceRole // "WORKER"),
+      (.NodePoolId // ""),
+      (.LanIP // ""),
+      (.CreatedTime // "")
+    ] | @csv'
+}
+
+tke_help () {
+  echo "tke commands:"
+  echo "  ls               クラスター一覧 (DescribeClusters)"
+  echo "  show CLUSTER_ID  クラスター詳細 (DescribeClusters --ClusterIds)"
+  echo "  nodes CLUSTER_ID クラスターのノード一覧 (DescribeClusterInstances)"
+  echo "  help             このヘルプを表示"
+}
+
+case "$cmd" in
+  ls)
+    if [[ "$1" == "--csv" ]]; then
+      tke_ls
+    else
+      tke_ls | column -t -s ','
+    fi
+    ;;
+  show|describe)
+    [[ -n "$1" ]] || { echo "usage: tcclit tke show CLUSTER_ID" >&2; exit 1; }
+    tke_show "$1"
+    ;;
+  nodes|instances)
+    [[ -n "$1" ]] || { echo "usage: tcclit tke nodes CLUSTER_ID" >&2; exit 1; }
+    if [[ "$2" == "--csv" ]]; then
+      tke_nodes "$1"
+    else
+      tke_nodes "$1" | column -t -s ','
+    fi
+    ;;
+  help|-h|--help|"")
+    tke_help
+    ;;
+  *)
+    echo "unknown: $cmd" >&2
+    echo "run: tcclit tke help" >&2
+    exit 1
+    ;;
+esac

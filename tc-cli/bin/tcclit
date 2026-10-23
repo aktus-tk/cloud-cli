@@ -7,19 +7,45 @@ else
 fi
 
 _debug=0
+_region=""
 _args=()
-for _a in "$@"; do
-  if [[ "$_a" == "--debug" ]]; then _debug=1
-  else _args+=("$_a")
-  fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --debug)
+      _debug=1
+      shift
+      ;;
+    --region)
+      [[ -n "${2:-}" ]] || { echo "tcclit: --region requires a value" >&2; exit 1; }
+      _region="$2"
+      shift 2
+      ;;
+    --region=*)
+      _region="${1#--region=}"
+      [[ -n "$_region" ]] || { echo "tcclit: --region requires a value" >&2; exit 1; }
+      shift
+      ;;
+    *)
+      _args+=("$1")
+      shift
+      ;;
+  esac
 done
 set -- "${_args[@]}"
+
+if [[ -n "$_region" ]]; then
+  export CLOUD_CLI_TCCLI_REGION="$_region"
+fi
 
 COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
-  echo "usage: tcclit [--debug] <command> ..."
+  echo "usage: tcclit [--debug] [--region <name>] <command> ..."
+  echo
+  echo "global options:"
+  echo "  --debug              print resolved tccli invocations"
+  echo "  --region <name>      set Tencent Cloud region for this invocation (anywhere in args)"
   echo
   echo "available commands:"
   ls "$COMMANDS"
@@ -49,8 +75,8 @@ if [[ ! -x "$COMMAND" ]]; then
 fi
 
 # tc-assume にプロファイルがある場合は必ず assume（TC_ASSUME_WRAPPED で再帰防止）。
-# login は認証取得そのもののため exec ラッパーは使わない。
-if [[ "$CMD" != "login" ]] && tc_should_assume; then
+# login / open は tc-assume を直接呼ぶため exec ラッパーは使わない。
+if [[ "$CMD" != "login" && "$CMD" != "open" ]] && tc_should_assume; then
   if [[ $# -eq 0 ]]; then
     tc_assume_exec "$COMMAND" help
   else
