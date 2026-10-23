@@ -10,7 +10,7 @@ COMMANDS="${_bin}/../commands"
 CMD="$1"
 
 if [[ -z "$CMD" ]]; then
-  echo "usage: gcl <command> ..."
+  echo "usage: gclt <command> ..."
   echo
   echo "available commands:"
   ls "$COMMANDS"

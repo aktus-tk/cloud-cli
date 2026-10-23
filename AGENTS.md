@@ -49,7 +49,7 @@ cloud-cli
 
 ## コマンド設計・命名規則
 
-- エントリポイント: `aws-cli/bin/awst`、`g-cli/bin/gcloudt`、`tc-cli/bin/tcclit`
+- エントリポイント: `aws-cli/bin/awst`、`g-cli/bin/gcloudt`、`glite-cli/bin/gclt`、`tc-cli/bin/tcclit`
 - サブコマンド: 各 `*/commands/<name>` に実行可能 Bash スクリプト（第1引数で `case` 分岐）
 - 一覧は `ls`、詳細は `show` / `get` / `describe` など既存サブコマンドの慣習に合わせる
 - 表形式出力に `--csv` を用意する（既存コマンドと同様）

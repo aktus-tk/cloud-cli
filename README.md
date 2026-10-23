@@ -386,65 +386,65 @@ gcloudt dns zones                   # Cloud DNS マネージドゾーン一覧
 gcloudt dns records ZONE            # ゾーン内のレコードセット一覧
 ```
 
-### GCP Lite CLI (`gcl`)
+### GCP Lite CLI (`gclt`)
 
-`gcl` は [aktus-tk/gcp](https://github.com/aktus-tk/gcp)（gcloud-lite、Go 実装）のラッパです。
+`gclt` は [aktus-tk/gcp](https://github.com/aktus-tk/gcp)（gcloud-lite、Go 実装）のラッパです。
 `gcloud` を呼ばずに gcloud-lite バイナリで Google Cloud API を直接叩くため高速です
-（`gcl compute instances` は約 1 秒、`gcloudt gce ls` は 1 分以上かかるプロジェクトでも動作）。
+（`gclt gce ls` は約 1 秒、`gcloudt gce ls` は 1 分以上かかるプロジェクトでも動作）。
 出力は `gcloud` のテーブル形式に準拠します。
 
 #### Compute Engine (GCE)
 
 ```bash
-gcl gce ls                          # インスタンス一覧（gcloud 形式テーブル）
-gcl gce show INSTANCE_NAME          # インスタンス詳細
-gcl gce disks                       # ディスク一覧
-gcl gce addresses                   # 予約済み IP 一覧
-gcl gce snapshots                   # スナップショット一覧
+gclt gce ls                          # インスタンス一覧（gcloud 形式テーブル）
+gclt gce show INSTANCE_NAME          # インスタンス詳細
+gclt gce disks                       # ディスク一覧
+gclt gce addresses                   # 予約済み IP 一覧
+gclt gce snapshots                   # スナップショット一覧
 ```
 
 #### VPC Firewall
 
 ```bash
-gcl firewall ls                     # ファイアウォールルール一覧
+gclt firewall ls                     # ファイアウォールルール一覧
 ```
 
 #### Service Account / IAM
 
 ```bash
-gcl sa ls                           # Service Account 一覧
-gcl iam policy                      # プロジェクト IAM ポリシー
-gcl iam service-accounts            # Service Account 一覧
+gclt sa ls                           # Service Account 一覧
+gclt iam policy                      # プロジェクト IAM ポリシー
+gclt iam service-accounts            # Service Account 一覧
 ```
 
 #### Cloud Storage (GCS)
 
 ```bash
-gcl gcs ls                          # バケット一覧
-gcl gcs ls BUCKET_NAME              # オブジェクト一覧
+gclt gcs ls                          # バケット一覧
+gclt gcs ls BUCKET_NAME              # オブジェクト一覧
 ```
 
 #### Cloud Load Balancer
 
 ```bash
-gcl clb ls                          # ロードバランサー一覧
-gcl clb info NAME                   # LB トポロジ
-gcl clb backends                    # Backend Service 一覧
-gcl clb health NAME                 # ヘルスチェック詳細
+gclt clb ls                          # ロードバランサー一覧
+gclt clb info NAME                   # LB トポロジ
+gclt clb backends                    # Backend Service 一覧
+gclt clb health NAME                 # ヘルスチェック詳細
 ```
 
 #### ネットワーク・DNS
 
 ```bash
-gcl network ls                      # VPC ネットワーク一覧
-gcl network routes                  # ルート一覧
-gcl network routers                 # Cloud Router（NAT 含む）一覧
-gcl dns zones                       # マネージドゾーン一覧
-gcl dns records ZONE                # レコードセット一覧
+gclt network ls                      # VPC ネットワーク一覧
+gclt network routes                  # ルート一覧
+gclt network routers                 # Cloud Router（NAT 含む）一覧
+gclt dns zones                       # マネージドゾーン一覧
+gclt dns records ZONE                # レコードセット一覧
 ```
 
 未実装のサブコマンドは `aktus-tk/gcp`（gcloud-lite 本体）で追加実装する。
-対応状況は `gcl <command> help` を参照。
+対応状況は `gclt <command> help` を参照。
 
 ### Tencent Cloud CLI (`tcclit`)
 

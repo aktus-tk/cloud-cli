@@ -11,7 +11,7 @@ case "$cmd" in
     ;;
   show)
     if [[ -z "$1" ]]; then
-      echo "usage: gcl gce show INSTANCE_NAME" >&2
+      echo "usage: gclt gce show INSTANCE_NAME" >&2
       exit 1
     fi
     exec gcl compute instance "$@"
@@ -44,7 +44,7 @@ case "$cmd" in
     ;;
   *)
     echo "unknown command: $cmd" >&2
-    echo "run: gcl gce help" >&2
+    echo "run: gclt gce help" >&2
     exit 1
     ;;
 esac

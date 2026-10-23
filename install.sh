@@ -8,7 +8,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0")
 
-Install awst, gcloudt, and tcclit into ~/.local/bin as symlinks to this repository.
+Install awst, gcloudt, gclt, and tcclit into ~/.local/bin as symlinks to this repository.
 EOF
 }
 
@@ -54,6 +54,7 @@ is_prior_cloud_cli_link() {
   case "$name" in
     awst) [[ "$target" == *"/aws-cli/bin/awst" ]] ;;
     gcloudt) [[ "$target" == *"/g-cli/bin/gcloudt" ]] ;;
+    gclt) [[ "$target" == *"/glite-cli/bin/gclt" ]] ;;
     tcclit) [[ "$target" == *"/tc-cli/bin/tcclit" ]] ;;
     *) return 1 ;;
   esac
@@ -99,6 +100,7 @@ mkdir -p "$BINDIR"
 
 install_link awst aws-cli/bin/awst
 install_link gcloudt g-cli/bin/gcloudt
+install_link gclt glite-cli/bin/gclt
 install_link tcclit tc-cli/bin/tcclit
 
 if ! path_has_bindir; then
@@ -107,4 +109,4 @@ if ! path_has_bindir; then
   echo '  export PATH="$HOME/.local/bin:$PATH"' >&2
 fi
 
-echo "install.sh: installed awst, gcloudt, tcclit into ${BINDIR}"
+echo "install.sh: installed awst, gcloudt, gclt, tcclit into ${BINDIR}"

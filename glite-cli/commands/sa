@@ -23,7 +23,7 @@ case "$cmd" in
     ;;
   *)
     echo "unknown command: $cmd" >&2
-    echo "run: gcl sa help" >&2
+    echo "run: gclt sa help" >&2
     exit 1
     ;;
 esac
