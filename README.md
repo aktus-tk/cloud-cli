@@ -420,6 +420,18 @@ tcclit cvm start NAME   # インスタンスを起動
 tcclit cvm stop NAME    # 実行予定コマンドのみ表示（実行しない）
 ```
 
+#### Cloud Block Storage (CBS)
+
+```bash
+tcclit cbs disk ls               # ディスク一覧
+tcclit cbs disk ls --csv         # CSV 形式
+tcclit cbs disk show ID|NAME     # ディスク詳細 (JSON)
+tcclit cbs snapshot ls                       # スナップショット一覧
+tcclit cbs snapshot ls --csv                 # CSV 形式
+tcclit cbs snapshot create DISK_ID_OR_NAME [NAME]   # スナップショット取得
+tcclit cbs snapshot delete SNAPSHOT_ID       # 実行予定コマンドのみ表示（実行しない）
+```
+
 #### Tencent EdgeOne (TEO)
 
 ```bash

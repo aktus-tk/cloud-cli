@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -e
+
+group=$1
+shift || true
+
+disk_ls () {
+  echo "DiskName,DiskId,Zone,DiskType,DiskSize(GB),DiskState,Attached,InstanceId"
+  tccli cbs DescribeDisks --output json | jq -r '.DiskSet[]? | [
+    .DiskName,
+    .DiskId,
+    .Placement.Zone,
+    .DiskType,
+    (.DiskSize | tostring),
+    .DiskState,
+    (.Attached // false | tostring),
+    (.InstanceId // "")
+  ] | @csv'
+}
+
+disk_get_id () {
+  local name=$1
+  tccli cbs DescribeDisks --output json | jq -r --arg n "$name" '
+    .DiskSet[]?
+    | select(.DiskId == $n or .DiskName == $n)
+    | .DiskId' | head -1
+}
+
+disk_cmd () {
+  local cmd=$1
+  shift || true
+  case "$cmd" in
+    ls)
+      if [[ "$1" == "--csv" ]]; then
+        disk_ls
+      else
+        disk_ls | column -t -s $','
+      fi
+      ;;
+    show)
+      local id
+      id=$(disk_get_id "$1")
+      [[ -n "$id" ]] || { echo "no disk: $1" >&2; exit 1; }
+      tccli cbs DescribeDisks --output json \
+        | jq -r --arg id "$id" '.DiskSet[] | select(.DiskId == $id)'
+      ;;
+    help|-h|--help|"")
+      echo "disk commands:"
+      echo "  ls           ディスク一覧 (DescribeDisks)"
+      echo "  ls --csv     CSV 出力"
+      echo "  show ID|NAME ディスク詳細 (JSON)"
+      ;;
+    *)
+      echo "unknown: disk $cmd" >&2
+      echo "run: tcclit cbs disk help" >&2
+      exit 1
+      ;;
+  esac
+}
+
+snapshot_ls () {
+  echo "SnapshotName,SnapshotId,DiskId,SnapshotState,CreateTime,Progress"
+  tccli cbs DescribeSnapshots --output json | jq -r '.SnapshotSet[]? | [
+    .SnapshotName,
+    .SnapshotId,
+    .DiskId,
+    .SnapshotState,
+    .CreateTime,
+    ((.Percent // 100) | tostring)
+  ] | @csv'
+}
+
+snapshot_cmd () {
+  local cmd=$1
+  shift || true
+  case "$cmd" in
+    ls)
+      if [[ "$1" == "--csv" ]]; then
+        snapshot_ls
+      else
+        snapshot_ls | column -t -s $','
+      fi
+      ;;
+    create)
+      [[ -n "${1:-}" ]] || { echo "usage: tcclit cbs snapshot create DISK_ID_OR_NAME [SNAPSHOT_NAME]" >&2; exit 1; }
+      local id
+      id=$(disk_get_id "$1")
+      [[ -n "$id" ]] || { echo "no disk: $1" >&2; exit 1; }
+      shift || true
+      if [[ -n "${1:-}" ]]; then
+        tccli cbs CreateSnapshot --cli-unfold-argument --DiskId "$id" --SnapshotName "$1"
+      else
+        tccli cbs CreateSnapshot --cli-unfold-argument --DiskId "$id"
+      fi
+      ;;
+    delete)
+      [[ -n "${1:-}" ]] || { echo "usage: tcclit cbs snapshot delete SNAPSHOT_ID" >&2; exit 1; }
+      echo "tccli cbs DeleteSnapshots --cli-unfold-argument --SnapshotIds '[\"$1\"]'"
+      echo "# Run the above command to delete the snapshot"
+      ;;
+    help|-h|--help|"")
+      echo "snapshot commands:"
+      echo "  ls                                  スナップショット一覧 (DescribeSnapshots)"
+      echo "  ls --csv                            CSV 出力"
+      echo "  create DISK_ID_OR_NAME [NAME]       スナップショット取得 (CreateSnapshot)"
+      echo "  delete SNAPSHOT_ID                  実行予定コマンドのみ表示（実行しない）"
+      ;;
+    *)
+      echo "unknown: snapshot $cmd" >&2
+      echo "run: tcclit cbs snapshot help" >&2
+      exit 1
+      ;;
+  esac
+}
+
+case "$group" in
+  disk)
+    disk_cmd "$@"
+    ;;
+  snapshot)
+    snapshot_cmd "$@"
+    ;;
+  help|-h|--help|"")
+    echo "cbs commands:"
+    echo "  disk ls|show              ディスクの確認"
+    echo "  snapshot ls|create|delete スナップショットの操作"
+    ;;
+  *)
+    echo "unknown: $group" >&2
+    echo "run: tcclit cbs help" >&2
+    exit 1
+    ;;
+esac
