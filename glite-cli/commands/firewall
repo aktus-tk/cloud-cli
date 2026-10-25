@@ -30,12 +30,10 @@ firewall commands (gcloud-lite backend):
       --network N --allow tcp:22 --source-ranges CIDR,... [--target-tags T,...]
                     [--priority N] [--description S]
 
-管理用 SSH ルールの運用（各環境 1 ルール原則）:
-  IP 追加:  gclt firewall update admin-ssh --add-source-ranges NEW_IP/32 --dry-run
-  確認後:   gclt firewall update admin-ssh --add-source-ranges NEW_IP/32 --yes
-  新IPで SSH 確認後、旧IP削除:
-            gclt firewall update admin-ssh --remove-source-ranges OLD_IP/32 --dry-run
-            gclt firewall update admin-ssh --remove-source-ranges OLD_IP/32 --yes
+管理用 SSH の運用方針:
+  既存ルールは変更・削除しない。Cloud NGFW（fwpolicy + addrgroup）へ
+  新ルールを「追加するだけ」で用意する（gclt fwpolicy help 参照）。
+  firewall update / create は上記方針以外の用途向け。
 
   --dry-run を付けるとリクエスト内容と変更前後の差分を表示して終了する（API 呼び出しなし）。
   実行時は確認プロンプトが出る（--yes で省略）。

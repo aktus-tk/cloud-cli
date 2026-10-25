@@ -412,6 +412,34 @@ gclt firewall update NAME --add-source-ranges NEW_IP/32 --dry-run   # sourceRang
 gclt firewall update NAME --remove-source-ranges OLD_IP/32 --dry-run # sourceRanges 削除（冪等）
 gclt firewall create admin-ssh --network default --allow tcp:22 --source-ranges IP/32 --target-tags admin-ssh --dry-run
 # 更新系は確認プロンプトあり（--yes で省略）
+# 注意: 既存の VPC firewall rules（SSH 許可ルール含む）は変更・削除しない。
+# 管理用 SSH は次の Cloud NGFW（fwpolicy + addrgroup）を「追加するだけ」で用意する。
+
+#### Cloud NGFW (fwpolicy / addrgroup)
+
+```bash
+gclt fwpolicy ls                                # global network firewall policies 一覧
+gclt fwpolicy show NAME                         # rules + associations 詳細
+gclt fwpolicy create admin-ssh --dry-run        # 冪等
+gclt fwpolicy assoc add admin-ssh --network vest --dry-run   # 冪等
+gclt fwpolicy rule add admin-ssh --priority 1000 --direction INGRESS --action allow \
+    --layer4 tcp:22 \
+    --src-address-groups organizations/82414925066/locations/global/addressGroups/admin-ssh \
+    --description admin-ssh --dry-run           # priority 重複時 no-op
+gclt fwpolicy rule rm admin-ssh --priority 1000 --dry-run    # 無ければ no-op
+
+gclt addrgroup ls --org 82414925066             # 組織レベル（--org 省略で project）
+gclt addrgroup show admin-ssh --org 82414925066
+gclt addrgroup create admin-ssh --type IPV4 --capacity 50 --org 82414925066 --dry-run
+gclt addrgroup add admin-ssh NEW_IP --org 82414925066 --dry-run      # 冪等
+gclt addrgroup remove admin-ssh OLD_IP --org 82414925066 --dry-run   # 冪等
+gclt addrgroup set admin-ssh --items IP,... --org 82414925066 --dry-run
+# fwpolicy / addrgroup の更新系も --dry-run / 確認プロンプト（--yes で省略）。
+# networksecurity API が対象 project で無効だと組織レベルは読めない（dry-run は続行）。
+# 運用方針: 既存の VPC firewall rules / SG ルールは変更・削除しない。
+# 管理用 SSH は fwpolicy + addrgroup を「追加するだけ」で用意し、
+# IP 変更時はアドレスグループの中身だけを更新する（add → SSH 確認 → 旧IP remove）。
+```
 ```
 
 #### Service Account / IAM
@@ -550,6 +578,9 @@ tcclit vpc sg rule add SG --proto tcp --port 22 --addr-template admin-ssh --desc
 tcclit vpc sg rule rm SG --proto tcp --port 22 --addr-template admin-ssh --dry-run
 
 # 管理用 SSH の想定運用（テンプレート admin-ssh を SG ルールから参照）:
+#   SG ルールは既存ルールを触らず「新規ルールを 1 つ追加するだけ」
+#   （tcclit vpc sg rule add で作成。既存ルールの変更・削除はしない）
+#   IP 変更時はアドレステンプレートの中身だけを更新する:
 #   1. tcclit vpc addr add admin-ssh NEW_IP --dry-run → 確認後 --yes で実行
 #   2. NEW_IP から SSH できることを確認
 #   3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run → 確認後 --yes で実行

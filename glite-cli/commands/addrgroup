@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls|list)
+    exec gcl addrgroup ls "$@"
+    ;;
+  show)
+    exec gcl addrgroup show "$@"
+    ;;
+  create)
+    exec gcl addrgroup create "$@"
+    ;;
+  add)
+    exec gcl addrgroup add "$@"
+    ;;
+  remove|rm)
+    exec gcl addrgroup remove "$@"
+    ;;
+  set)
+    exec gcl addrgroup set "$@"
+    ;;
+  help|-h|--help|"")
+    cat <<'EOF'
+addrgroup commands (gcloud-lite backend) — Cloud NGFW address groups:
+  ls [--org ORG_ID]        一覧（--org 省略で project スコープ）
+  show NAME [--org ORG_ID] 詳細（全 items 表示）
+  create NAME --type IPV4 --capacity N [--org ORG_ID]   （冪等 / --dry-run / --yes）
+  add NAME IP... [--org ORG_ID]      追加（冪等 / --dry-run / --yes）
+  remove NAME IP... [--org ORG_ID]   削除（冪等 / --dry-run / --yes）
+  set NAME --items IP,... [--org ORG_ID]  全置換（同一内容なら no-op / --dry-run / --yes）
+
+--org を指定すると organizations/ORG/locations/global/addressGroups/NAME、
+省略すると projects/PROJECT/locations/global/addressGroups/NAME を操作する。
+
+  --dry-run を付けると変更前後の差分を表示して終了（API 呼び出しなし）。
+  実行時は確認プロンプトが出る（--yes で省略）。
+EOF
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gclt addrgroup help" >&2
+    exit 1
+    ;;
+esac

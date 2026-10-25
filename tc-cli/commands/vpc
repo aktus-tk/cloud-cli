@@ -37,6 +37,9 @@ usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
   add/remove は冪等（既にあれば / 既に無ければ何もしない）。
 
 管理用 SSH の想定運用（アドレステンプレート admin-ssh を SG ルールから参照）:
+  既存の SG ルールは変更・削除しない。tcclit vpc sg rule add で
+  admin-ssh テンプレートを参照する新ルールを 1 つ「追加するだけ」。
+  IP 変更時はアドレステンプレートの中身だけを更新する:
   1. tcclit vpc addr add admin-ssh NEW_IP --dry-run   # 確認後 --yes で実行
   2. NEW_IP から SSH できることを確認
   3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run # 確認後 --yes で実行

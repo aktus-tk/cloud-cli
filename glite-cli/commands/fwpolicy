@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -e
+
+cmd=$1
+shift || true
+
+case "$cmd" in
+  ls|list)
+    exec gcl fwpolicy ls "$@"
+    ;;
+  show)
+    exec gcl fwpolicy show "$@"
+    ;;
+  create)
+    exec gcl fwpolicy create "$@"
+    ;;
+  assoc)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      ls|list) exec gcl fwpolicy show "$@" ;;  # show に associations を含む
+      add) exec gcl fwpolicy assoc add "$@" ;;
+      *) echo "usage: gclt fwpolicy assoc add NAME --network N" >&2; exit 1 ;;
+    esac
+    ;;
+  rule)
+    sub="${1:-}"
+    if [[ -z "$sub" ]]; then
+      echo "usage: gclt fwpolicy rule add|rm NAME ..." >&2
+      exit 1
+    fi
+    shift 1 || true
+    case "$sub" in
+      add) exec gcl fwpolicy rule add "$@" ;;
+      rm|remove|delete) exec gcl fwpolicy rule rm "$@" ;;
+      *) echo "usage: gclt fwpolicy rule add|rm NAME ..." >&2; exit 1 ;;
+    esac
+    ;;
+  help|-h|--help|"")
+    cat <<'EOF'
+fwpolicy commands (gcloud-lite backend) — Cloud NGFW network firewall policies:
+  ls                     ポリシー一覧（name, rules, associations）
+  show NAME              ポリシー詳細（rules + associations、全フィールドは --json）
+  create NAME            ポリシー作成（冪等 / --dry-run / --yes）
+  assoc add NAME --network N    ネットワークへ関連付け（冪等 / --dry-run / --yes）
+  rule add NAME --priority P --direction INGRESS --action allow --layer4 tcp:22
+        [--src-address-groups AG,... | --src-ip-ranges CIDR,...]
+        [--target-secure-tags ...] [--target-service-accounts ...] [--description S]
+        （priority 重複時は no-op / --dry-run / --yes）
+  rule rm NAME --priority P     該当 priority のルール削除（無ければ no-op / --dry-run / --yes）
+
+  --dry-run を付けるとリクエスト内容を表示して終了（API 呼び出しなし）。
+  実行時は確認プロンプトが出る（--yes で省略）。
+EOF
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run: gclt fwpolicy help" >&2
+    exit 1
+    ;;
+esac
