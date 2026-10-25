@@ -568,8 +568,8 @@ tcclit vpc sg show SG_ID_OR_NAME           # 1 つの SG のルール（表形�
 # アドレステンプレート（IP リスト）操作 — 更新系は --dry-run / 確認プロンプト（--yes で省略）
 tcclit vpc addr ls                         # テンプレート一覧（id, name, ips）
 tcclit vpc addr show NAME                  # 1 テンプレートの IP 一覧
-tcclit vpc addr create NAME --ips IP[,IP...] --dry-run
-tcclit vpc addr add NAME NEW_IP --dry-run     # 冪等（既にあれば no-op）
+tcclit vpc addr create NAME --ips IP[,IP...] --dry-run   # --desc S で備考指定可（既定 'tk home-note'）
+tcclit vpc addr add NAME NEW_IP --dry-run     # 冪等（既にあれば no-op、--desc S で備考指定可）
 tcclit vpc addr remove NAME OLD_IP --dry-run  # 冪等（無ければ no-op）
 tcclit vpc addr set NAME --ips IP[,IP...] --dry-run   # 全置換
 
