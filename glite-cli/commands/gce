@@ -16,6 +16,19 @@ case "$cmd" in
     fi
     exec gcl compute instance "$@"
     ;;
+  tags)
+    sub="${1:-}"
+    if [[ -z "$sub" ]]; then
+      echo "usage: gclt gce tags add|rm INSTANCE_NAME TAG... [--zone Z] [--dry-run] [--yes]" >&2
+      exit 1
+    fi
+    shift 1 || true
+    case "$sub" in
+      add) exec gcl compute tags add "$@" ;;
+      rm|remove|delete) exec gcl compute tags rm "$@" ;;
+      *) echo "usage: gclt gce tags add|rm INSTANCE_NAME TAG... [--zone Z] [--dry-run] [--yes]" >&2; exit 1 ;;
+    esac
+    ;;
   disks)
     exec gcl compute disks "$@"
     ;;
@@ -34,7 +47,9 @@ case "$cmd" in
   help|-h|--help|"")
     echo "gce commands (gcloud-lite backend):"
     echo "  ls               インスタンス一覧（gcloud 形式テーブル）"
-    echo "  show NAME        インスタンス詳細"
+    echo "  show NAME        インスタンス詳細（networks / network tags 含む）"
+    echo "  tags add NAME TAG... [--zone Z]   network tag 追加（冪等 / --dry-run / --yes）"
+    echo "  tags rm NAME TAG... [--zone Z]    network tag 削除（冪等 / --dry-run / --yes）"
     echo "  disks            ディスク一覧"
     echo "  addresses        予約済み IP 一覧"
     echo "  snapshots        スナップショット一覧"
