@@ -26,6 +26,9 @@ firewall commands (gcloud-lite backend):
       --source-ranges CIDR,...        全置換
       --add-source-ranges CIDR,...    追加（既にあれば何もしない / 冪等）
       --remove-source-ranges CIDR,... 削除（無ければ何もしない / 冪等）
+      --description TEXT              説明文を設定（同値なら no-op / 冪等）
+                                      sourceRanges 系と同時指定可。description
+                                      のみ指定時は sourceRanges は送らない。
   create NAME      ルール作成（--dry-run / --yes 対応、同名ルールがあれば何もしない）
       --network N --allow tcp:22 --source-ranges CIDR,... [--target-tags T,...]
                     [--priority N] [--description S]
