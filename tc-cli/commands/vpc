@@ -4,10 +4,42 @@ set -euo pipefail
 cmd=${1:-}
 shift || true
 
+# global mutation flags (--dry-run / --yes): strip from args, export for helpers
+VPC_DRY_RUN=0
+VPC_YES=0
+_args=()
+for _a in "$@"; do
+  case "$_a" in
+    --dry-run) VPC_DRY_RUN=1 ;;
+    --yes) VPC_YES=1 ;;
+    *) _args+=("$_a") ;;
+  esac
+done
+set -- "${_args[@]+"${_args[@]}"}"
+export VPC_DRY_RUN VPC_YES
+
 usage() {
   cat <<EOF
 usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
        tcclit vpc sg show <sg-id|name>
+       tcclit vpc sg rule add <sg-id|name> --proto tcp --port 22 (--addr-template NAME | --cidr IP) [--desc S] [--direction ingress] [--dry-run] [--yes]
+       tcclit vpc sg rule rm  <sg-id|name> --proto tcp --port 22 (--addr-template NAME | --cidr IP) [--direction ingress] [--dry-run] [--yes]
+       tcclit vpc addr ls
+       tcclit vpc addr show NAME
+       tcclit vpc addr create NAME --ips IP[,IP...] [--dry-run] [--yes]
+       tcclit vpc addr set NAME --ips IP[,IP...] [--dry-run] [--yes]
+       tcclit vpc addr add NAME IP[,IP...] [--dry-run] [--yes]
+       tcclit vpc addr remove NAME IP[,IP...] [--dry-run] [--yes]
+
+更新系サブコマンド (create/set/add/remove, sg rule add/rm) は:
+  --dry-run   送る tccli コマンドと JSON ペイロードを表示して終了（API 呼び出しなし）
+  --yes       確認プロンプトを省略して実行
+  add/remove は冪等（既にあれば / 既に無ければ何もしない）。
+
+管理用 SSH の想定運用（アドレステンプレート admin-ssh を SG ルールから参照）:
+  1. tcclit vpc addr add admin-ssh NEW_IP --dry-run   # 確認後 --yes で実行
+  2. NEW_IP から SSH できることを確認
+  3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run # 確認後 --yes で実行
 
 ls はセキュリティグループ一覧（sg-id, sg-name）を表示する。
 --detail を付けると SG ごとにブロック表示する（awst sg ls --detail と同じレイアウト）:
@@ -314,9 +346,257 @@ sg_show() {
   done | column -t -s $'\t' || true
 }
 
+# ---- shared: dry-run / confirm -------------------------------------------
+
+vpc_confirm_or_abort() {
+  # $1 = question. Returns 0 = proceed, 1 = abort.
+  if [[ "${VPC_DRY_RUN:-0}" == 1 ]]; then
+    echo "dry-run: no API call made"
+    return 1
+  fi
+  if [[ "${VPC_YES:-0}" == 1 ]]; then
+    return 0
+  fi
+  read -r -p "$1 [y/N]: " ans
+  [[ "$ans" == "y" || "$ans" == "yes" ]]
+}
+
+# run_tccli CMD... — prints the invocation, then dry-run aborts or executes.
+vpc_run_tccli() {
+  echo "+ tccli $*" >&2
+  if [[ "${VPC_DRY_RUN:-0}" == 1 ]]; then
+    echo "dry-run: no API call made"
+    return 1
+  fi
+  tccli "$@"
+}
+
+addr_resolve_id() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || { echo "missing address template name" >&2; return 1; }
+  if [[ "$name" =~ ^ipm- ]]; then
+    echo "$name"
+    return 0
+  fi
+  tccli vpc DescribeAddressTemplates \
+    --Filters "[{\"Name\":\"address-template-name\",\"Values\":[\"$name\"]}]" \
+    --output json | jq -r '.AddressTemplateSet[0].AddressTemplateId // empty'
+}
+
+addr_list_ips() {
+  # $1 = template id; prints comma-joined IPs (empty if none)
+  tccli vpc DescribeAddressTemplates --AddressTemplateIds "[\"$1\"]" --output json \
+    | jq -r '.AddressTemplateSet[0].AddressSet // [] | join(",")'
+}
+
+addr_ls() {
+  echo "addr-template-id,addr-template-name,ips"
+  tccli vpc DescribeAddressTemplates --output json \
+    | jq -r '.AddressTemplateSet[]? | [.AddressTemplateId, .AddressTemplateName, ((.AddressSet // []) | join(","))] | @csv'
+}
+
+addr_show() {
+  local key="${1:-}"
+  [[ -n "$key" ]] || { echo "Usage: tcclit vpc addr show NAME" >&2; exit 1; }
+  local id
+  id="$(addr_resolve_id "$key")" || exit 1
+  [[ -n "$id" ]] || { echo "Address template not found: $key" >&2; exit 1; }
+  tccli vpc DescribeAddressTemplates --AddressTemplateIds "[\"$id\"]" --output json \
+    | jq -r '.AddressTemplateSet[0] | "AddressTemplateId: \(.AddressTemplateId)", "AddressTemplateName: \(.AddressTemplateName)", "CreatedTime: \(.CreatedTime // "-")", "IPs:", ((.AddressSet // [])[] | "  \(.)")'
+}
+
+addr_create() {
+  local name="${1:-}"; shift || true
+  local ips=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ips) ips="${2:-}"; shift 2 ;;
+      --ips=*) ips="${1#--ips=}"; shift ;;
+      *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ -n "$name" && -n "$ips" ]] || { echo "Usage: tcclit vpc addr create NAME --ips IP[,IP...]" >&2; exit 1; }
+  # 冪等: 既存なら何もしない
+  local existing
+  existing="$(addr_resolve_id "$name" 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    echo "address template $name already exists ($existing); nothing to do"
+    return 0
+  fi
+  local ips_json
+  ips_json="$(printf '%s' "$ips" | jq -R 'split(",")' )"
+  echo "create address template: $name ips=$ips"
+  vpc_run_tccli vpc CreateAddressTemplate --AddressTemplateName "$name" --Ips "$ips_json" \
+    && echo "created: $name"
+}
+
+addr_set() {
+  local name="${1:-}"; shift || true
+  local ips=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ips) ips="${2:-}"; shift 2 ;;
+      --ips=*) ips="${1#--ips=}"; shift ;;
+      *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ -n "$name" && -n "$ips" ]] || { echo "Usage: tcclit vpc addr set NAME --ips IP[,IP...]" >&2; exit 1; }
+  local id
+  id="$(addr_resolve_id "$name")" || exit 1
+  [[ -n "$id" ]] || { echo "Address template not found: $name" >&2; exit 1; }
+  local before ips_json
+  before="$(addr_list_ips "$id")"
+  ips_json="$(printf '%s' "$ips" | jq -R 'split(",")')"
+  echo "set address template: $name ($id)"
+  echo "  before: ${before:-(none)}"
+  echo "  after:  $ips"
+  vpc_confirm_or_abort "apply?" || return 0
+  vpc_run_tccli vpc ModifyAddressTemplateAttribute --AddressTemplateId "$id" --Ips "$ips_json" \
+    && echo "updated: $name"
+}
+
+addr_add_remove() {
+  local mode="$1" name="$2"; shift 2
+  local ips="${1:-}"
+  [[ -n "$name" && -n "$ips" ]] || { echo "Usage: tcclit vpc addr $mode NAME IP[,IP...]" >&2; exit 1; }
+  local id
+  id="$(addr_resolve_id "$name")" || exit 1
+  [[ -n "$id" ]] || { echo "Address template not found: $name" >&2; exit 1; }
+  IFS=',' read -ra wanted <<< "$ips"
+  local current
+  current="$(addr_list_ips "$id")"
+  local cur_arr=() ; [[ -n "$current" ]] && IFS=',' read -ra cur_arr <<< "$current"
+  _addr_has() { local v; for v in ${cur_arr[@]+"${cur_arr[@]}"}; do [[ "$v" == "$1" ]] && return 0; done; return 1; }
+
+  local new_arr=() changed=0 skipped=0 v
+  if [[ "$mode" == "add" ]]; then
+    for v in ${cur_arr[@]+"${cur_arr[@]}"}; do new_arr+=("$v"); done
+    for v in "${wanted[@]}"; do
+      if _addr_has "$v"; then skipped=$((skipped+1)); else new_arr+=("$v"); changed=1; fi
+    done
+  else
+    for v in ${cur_arr[@]+"${cur_arr[@]}"}; do
+      if [[ " ${wanted[*]} " == *" $v "* ]]; then changed=1; else new_arr+=("$v"); fi
+    done
+    for v in "${wanted[@]}"; do _addr_has "$v" || skipped=$((skipped+1)); done
+  fi
+  if [[ "$changed" == 0 ]]; then
+    echo "no change needed ($skipped entr(y|ies) already $( [[ $mode == add ]] && echo present || echo absent ))"
+    return 0
+  fi
+  local after
+  after="$(printf '%s\n' "${new_arr[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')"
+  echo "address template: $name ($id) [$mode]"
+  echo "  before: ${current:-(none)}"
+  echo "  after:  $(echo "$after" | jq -r 'join(",")')"
+  vpc_confirm_or_abort "apply?" || return 0
+  vpc_run_tccli vpc ModifyAddressTemplateAttribute --AddressTemplateId "$id" --Ips "$after" \
+    && echo "updated: $name"
+}
+
+sg_rule_add() {
+  local sg_key="${1:-}"; shift || true
+  local proto="" port="" tmpl="" cidr="" desc="" direction="ingress"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --proto) proto="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      --addr-template) tmpl="$2"; shift 2 ;;
+      --cidr) cidr="$2"; shift 2 ;;
+      --desc) desc="$2"; shift 2 ;;
+      --direction) direction="$2"; shift 2 ;;
+      *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ -n "$sg_key" && -n "$proto" && -n "$port" ]] || { echo "Usage: tcclit vpc sg rule add SG --proto tcp --port 22 (--addr-template NAME | --cidr IP) [--desc S]" >&2; exit 1; }
+  if [[ -z "$cidr" ]]; then
+    [[ -n "$tmpl" ]] || { echo "--addr-template or --cidr is required" >&2; exit 1; }
+    cidr="$(addr_resolve_id "$tmpl")" || exit 1
+    [[ -n "$cidr" ]] || { echo "Address template not found: $tmpl" >&2; exit 1; }
+  fi
+  local gid
+  gid="$(sg_resolve_id "$sg_key")" || exit 1
+  local dir_key dir_label
+  if [[ "$direction" == egress* ]]; then dir_key="Egress"; dir_label="egress"; else dir_key="Ingress"; dir_label="ingress"; fi
+  # 冪等: 同一 proto/port/target のルールが既にあれば何もしない
+  local dup
+  dup="$(tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId "$gid" --output json \
+    | jq -c --arg proto "$proto" --arg port "$port" --arg target "$cidr" \
+      ".SecurityGroupPolicySet.${dir_key}[]? | select((.Protocol // \"ALL\") == \$proto and (.Port // \"all\") == \$port and ((.CidrBlock // .AddressTemplate.AddressGroupId // .AddressTemplate.AddressId // \"\") == \$target))")"
+  if [[ -n "$dup" ]]; then
+    echo "rule already exists; nothing to do"
+    return 0
+  fi
+  local policy
+  policy="$(jq -n --arg proto "$proto" --arg port "$port" --arg target "$cidr" --arg desc "$desc" \
+    '{($dir): [ {Protocol: $proto, Port: $port, (if ($target|test("^ipm-")) then "AddressTemplate" else "CidrBlock" end): $target} + (if ($desc != "") then {PolicyDescription: $desc} else {} end) ] }' \
+    --arg dir "$dir_key")"
+  echo "sg rule add: $gid ($dir_label) $proto:$port target=$cidr${desc:+ desc=$desc}"
+  vpc_confirm_or_abort "apply?" || return 0
+  vpc_run_tccli vpc CreateSecurityGroupPolicies --SecurityGroupId "$gid" --SecurityGroupPolicySet "$policy" \
+    && echo "created rule"
+}
+
+sg_rule_rm() {
+  local sg_key="${1:-}"; shift || true
+  local proto="" port="" tmpl="" cidr="" direction="ingress"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --proto) proto="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      --addr-template) tmpl="$2"; shift 2 ;;
+      --cidr) cidr="$2"; shift 2 ;;
+      --direction) direction="$2"; shift 2 ;;
+      *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ -n "$sg_key" && -n "$proto" && -n "$port" ]] || { echo "Usage: tcclit vpc sg rule rm SG --proto tcp --port 22 (--addr-template NAME | --cidr IP)" >&2; exit 1; }
+  if [[ -z "$cidr" ]]; then
+    [[ -n "$tmpl" ]] || { echo "--addr-template or --cidr is required" >&2; exit 1; }
+    cidr="$(addr_resolve_id "$tmpl")" || exit 1
+    [[ -n "$cidr" ]] || { echo "Address template not found: $tmpl" >&2; exit 1; }
+  fi
+  local gid
+  gid="$(sg_resolve_id "$sg_key")" || exit 1
+  local dir_key
+  if [[ "$direction" == egress* ]]; then dir_key="Egress"; else dir_key="Ingress"; fi
+  local matches
+  matches="$(tccli vpc DescribeSecurityGroupPolicies --SecurityGroupId "$gid" --output json \
+    | jq -c --arg proto "$proto" --arg port "$port" --arg target "$cidr" \
+      ".SecurityGroupPolicySet.${dir_key}[]? | select((.Protocol // \"ALL\") == \$proto and (.Port // \"all\") == \$port and ((.CidrBlock // .AddressTemplate.AddressGroupId // .AddressTemplate.AddressId // \"\") == \$target))")"
+  if [[ -z "$matches" ]]; then
+    echo "no matching rule; nothing to do"
+    return 0
+  fi
+  while IFS= read -r rule; do
+    [[ -z "$rule" ]] && continue
+    local idx
+    idx="$(echo "$rule" | jq -r '.PolicyIndex')"
+    echo "sg rule rm: $gid ($dir_key index=$idx) $proto:$port target=$cidr"
+    vpc_confirm_or_abort "apply?" || continue
+    local policy
+    policy="$(jq -n --arg dir "$dir_key" --arg idx "$idx" '{($dir): [{PolicyIndex: ($idx|tonumber)}]}')"
+    vpc_run_tccli vpc DeleteSecurityGroupPolicies --SecurityGroupId "$gid" --SecurityGroupPolicySet "$policy" \
+      && echo "deleted rule (index=$idx)"
+  done <<< "$matches"
+}
+
 case "$cmd" in
   sg)
     case "${1:-}" in
+      rule)
+        sub="${2:-}"
+        if [[ -z "$sub" ]]; then
+          echo "Usage: tcclit vpc sg rule add|rm SG --proto tcp --port 22 (--addr-template NAME | --cidr IP)" >&2
+          exit 1
+        fi
+        shift 2 || true
+        case "$sub" in
+          add) sg_rule_add "$@" ;;
+          rm|remove|delete) sg_rule_rm "$@" ;;
+          *) echo "Usage: tcclit vpc sg rule add|rm SG --proto tcp --port 22 (--addr-template NAME | --cidr IP)" >&2; exit 1 ;;
+        esac
+        ;;
       show)
         shift
         sg_show "$@"
@@ -324,6 +604,42 @@ case "$cmd" in
       ls|list)
         shift || true
         sg_ls "$@"
+        ;;
+      help|-h|--help|"")
+        usage
+        ;;
+      *)
+        echo "unknown: ${1:-}" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  addr)
+    case "${1:-}" in
+      ls|list)
+        shift || true
+        addr_ls
+        ;;
+      show)
+        shift
+        addr_show "$@"
+        ;;
+      create)
+        subname="${2:-}"; shift 2 || true
+        addr_create "$subname" "$@"
+        ;;
+      set)
+        subname="${2:-}"; shift 2 || true
+        addr_set "$subname" "$@"
+        ;;
+      add)
+        subname="${2:-}"; shift 2 || true
+        addr_add_remove add "$subname" "$@"
+        ;;
+      rm|remove)
+        subname="${2:-}"; shift 2 || true
+        addr_add_remove remove "$subname" "$@"
         ;;
       help|-h|--help|"")
         usage

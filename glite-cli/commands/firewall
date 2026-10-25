@@ -9,17 +9,37 @@ case "$cmd" in
     exec gcl firewall list "$@"
     ;;
   show)
-    # 未実装: aktus-tk/gcp (cmd/firewall.go) で describe を追加する
-    echo "gcl: firewall show is not implemented yet." >&2
-    echo "  add it in aktus-tk/gcp (cmd/firewall.go, internal/compute/firewalls.go)" >&2
-    exit 2
+    exec gcl firewall describe "$@"
+    ;;
+  update)
+    exec gcl firewall update "$@"
+    ;;
+  create)
+    exec gcl firewall create "$@"
     ;;
   help|-h|--help|"")
-    echo "firewall commands (gcloud-lite backend):"
-    echo "  ls               ファイアウォールルール一覧（gcloud 形式テーブル）"
-    echo ""
-    echo "not implemented in gcl (see aktus-tk/gcp):"
-    echo "  show RULE_NAME"
+    cat <<'EOF'
+firewall commands (gcloud-lite backend):
+  ls               ファイアウォールルール一覧（gcloud 形式テーブル）
+  show RULE_NAME   ルール詳細（全フィールド）
+  update NAME      sourceRanges 更新（--dry-run / --yes 対応）
+      --source-ranges CIDR,...        全置換
+      --add-source-ranges CIDR,...    追加（既にあれば何もしない / 冪等）
+      --remove-source-ranges CIDR,... 削除（無ければ何もしない / 冪等）
+  create NAME      ルール作成（--dry-run / --yes 対応、同名ルールがあれば何もしない）
+      --network N --allow tcp:22 --source-ranges CIDR,... [--target-tags T,...]
+                    [--priority N] [--description S]
+
+管理用 SSH ルールの運用（各環境 1 ルール原則）:
+  IP 追加:  gclt firewall update admin-ssh --add-source-ranges NEW_IP/32 --dry-run
+  確認後:   gclt firewall update admin-ssh --add-source-ranges NEW_IP/32 --yes
+  新IPで SSH 確認後、旧IP削除:
+            gclt firewall update admin-ssh --remove-source-ranges OLD_IP/32 --dry-run
+            gclt firewall update admin-ssh --remove-source-ranges OLD_IP/32 --yes
+
+  --dry-run を付けるとリクエスト内容と変更前後の差分を表示して終了する（API 呼び出しなし）。
+  実行時は確認プロンプトが出る（--yes で省略）。
+EOF
     ;;
   *)
     echo "unknown command: $cmd" >&2

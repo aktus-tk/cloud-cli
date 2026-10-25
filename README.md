@@ -407,6 +407,11 @@ gclt gce snapshots                   # スナップショット一覧
 
 ```bash
 gclt firewall ls                     # ファイアウォールルール一覧
+gclt firewall show RULE_NAME         # ルール詳細（全フィールド）
+gclt firewall update NAME --add-source-ranges NEW_IP/32 --dry-run   # sourceRanges 追加（冪等）
+gclt firewall update NAME --remove-source-ranges OLD_IP/32 --dry-run # sourceRanges 削除（冪等）
+gclt firewall create admin-ssh --network default --allow tcp:22 --source-ranges IP/32 --target-tags admin-ssh --dry-run
+# 更新系は確認プロンプトあり（--yes で省略）
 ```
 
 #### Service Account / IAM
@@ -531,6 +536,23 @@ tcclit vpc sg ls --detail                  # 全 SG の Ingress/Egress ルール
 tcclit vpc sg ls --detail --cidr 18.180.232.11         # 指定 CIDR を含むルールのみ
 tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only
 tcclit vpc sg show SG_ID_OR_NAME           # 1 つの SG のルール（表形式）
+
+# アドレステンプレート（IP リスト）操作 — 更新系は --dry-run / 確認プロンプト（--yes で省略）
+tcclit vpc addr ls                         # テンプレート一覧（id, name, ips）
+tcclit vpc addr show NAME                  # 1 テンプレートの IP 一覧
+tcclit vpc addr create NAME --ips IP[,IP...] --dry-run
+tcclit vpc addr add NAME NEW_IP --dry-run     # 冪等（既にあれば no-op）
+tcclit vpc addr remove NAME OLD_IP --dry-run  # 冪等（無ければ no-op）
+tcclit vpc addr set NAME --ips IP[,IP...] --dry-run   # 全置換
+
+# SG ルール操作（アドレステンプレート参照 or CIDR 直指定）
+tcclit vpc sg rule add SG --proto tcp --port 22 --addr-template admin-ssh --desc admin-ssh --dry-run
+tcclit vpc sg rule rm SG --proto tcp --port 22 --addr-template admin-ssh --dry-run
+
+# 管理用 SSH の想定運用（テンプレート admin-ssh を SG ルールから参照）:
+#   1. tcclit vpc addr add admin-ssh NEW_IP --dry-run → 確認後 --yes で実行
+#   2. NEW_IP から SSH できることを確認
+#   3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run → 確認後 --yes で実行
 ```
 
 ## プロジェクト構造
