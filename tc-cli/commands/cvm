@@ -39,6 +39,17 @@ cvm_ls () {
    tccli cvm DescribeInstances --Limit 100 | jq -r '.InstanceSet | sort_by(.InstanceName) | .[] | [.InstanceName,.Placement.Zone,.InstanceId,.InstanceType,.InstanceState,.CPU,.Memory,.PrivateIpAddresses[0],.PublicIpAddresses[0],.VirtualPrivateCloud.VpcId,.VirtualPrivateCloud.SubnetId,.OsName,.SecurityGroupIds[0],(.SystemDisk.DiskType + ":" + (.SystemDisk.DiskSize | tostring)),([.DataDisks[]? | .DiskType + ":" + (.DiskSize | tostring)] | join(";"))] | @csv'
 }
 
+cvm_ls_table () {
+  # CSV を正しくパースして TSV に変換してから column で整形する
+  # (CSV はカンマ区切りのため column -t -s $'\t' だけでは整形されない)
+  python3 -c '
+import csv, sys
+for row in csv.reader(sys.stdin):
+    if row:
+        print("\t".join(row))
+'
+}
+
 cvm_regions () {
   tccli cvm DescribeRegions --cli-unfold-argument --filter 'RegionSet[*].Region' \
     | jq -r '.[]'
@@ -62,7 +73,7 @@ case "$cmd" in
     if [[ "$1" == "--csv" ]]; then
       cvm_ls
     else
-      cvm_ls | column -t -s $'\t'
+      cvm_ls | cvm_ls_table | column -t -s $'\t'
     fi
     ;;
   types)
