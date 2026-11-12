@@ -526,6 +526,18 @@ tcclit cbs snapshot create DISK_ID_OR_NAME [NAME]   # スナップショット�
 tcclit cbs snapshot delete SNAPSHOT_ID       # 実行予定コマンドのみ表示（実行しない）
 ```
 
+#### Tencent Kubernetes Engine (TKE)
+
+```bash
+tcclit tke ls               # クラスター一覧
+tcclit tke ls --csv         # CSV 形式
+tcclit tke show CLUSTER_ID  # クラスター詳細
+tcclit tke nodes CLUSTER_ID # クラスターのノード一覧
+tcclit tke nodepools CLUSTER_ID [--csv] # ノードプール一覧
+tcclit tke os-images [--csv] # 利用可能な OS イメージ一覧
+tcclit tke nodepool-detail CLUSTER_ID NODE_POOL_ID # ノードプール詳細
+```
+
 #### Tencent EdgeOne (TEO)
 
 ```bash

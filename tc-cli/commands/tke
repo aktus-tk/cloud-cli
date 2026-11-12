@@ -85,6 +85,34 @@ tke_os_images () {
     ] | @csv'
 }
 
+tke_nodepool_detail () {
+  local cid=$1 npid=$2
+  tccli tke DescribeClusterNodePoolDetail --cli-unfold-argument --ClusterId "$cid" --NodePoolId "$npid" --output json \
+    | jq -r '.NodePool // empty' \
+    | jq -r '
+      "NodePoolId:       " + .NodePoolId,
+      "Name:             " + (.Name // ""),
+      "LifeState:        " + (.LifeState // ""),
+      "ASGStatus:        " + (.AutoscalingGroupStatus // ""),
+      "AutoscalingGroupId: " + (.AutoscalingGroupId // ""),
+      "LaunchConfigurationId: " + (.LaunchConfigurationId // ""),
+      "ManuallyAdded:    " + ((.NodeCountSummary.ManuallyAdded.Total // 0) | tostring),
+      "AutoscalingAdded: " + ((.NodeCountSummary.AutoscalingAdded.Total // 0) | tostring) +
+        " (Normal: " + ((.NodeCountSummary.AutoscalingAdded.Normal // 0) | tostring) + ")",
+      "Desired/Min/Max:  " + ((.DesiredNodesNum // 0) | tostring) + "/" +
+        ((.MinNodesNum // 0) | tostring) + "/" + ((.MaxNodesNum // 0) | tostring),
+      "OS:               " + (.NodePoolOs // ""),
+      "ImageId:          " + (.ImageId // ""),
+      "Runtime:          " + (.RuntimeConfig.RuntimeType // "") + " " + (.RuntimeConfig.RuntimeVersion // ""),
+      "DesiredPodNum:    " + ((.DesiredPodNum // 0) | tostring),
+      "DeletionProtection: " + ((.DeletionProtection // false) | tostring),
+      "Unschedulable:    " + ((.Unschedulable // 0) | tostring),
+      "Labels:           " + (([.Labels[]? | .Name + "=" + .Value] | join(", "))),
+      "Taints:           " + (([.Taints[]? | .Key + "=" + (.Value // "") + ":" + (.Effect // "")] | join(", "))),
+      "Tags:             " + (([.Tags[]? | .Key + "=" + .Value] | join(", "))),
+      "UserScript:       " + ((.UserScript // "") | gsub("\n"; " ; "))'
+}
+
 tke_help () {
   echo "tke commands:"
   echo "  ls               クラスター一覧 (DescribeClusters)"
@@ -92,6 +120,7 @@ tke_help () {
   echo "  nodes CLUSTER_ID クラスターのノード一覧 (DescribeClusterInstances)"
   echo "  nodepools CLUSTER_ID            ノードプール一覧 (DescribeClusterNodePools)"
   echo "  os-images                       利用可能な OS イメージ一覧 (DescribeOSImages)"
+  echo "  nodepool-detail CLUSTER_ID NODE_POOL_ID  ノードプール詳細 (DescribeClusterNodePoolDetail)"
   echo "  help             このヘルプを表示"
 }
 
@@ -129,6 +158,10 @@ case "$cmd" in
     else
       tke_os_images | column -t -s ','
     fi
+    ;;
+  nodepool-detail)
+    [[ -n "$1" && -n "$2" ]] || { echo "usage: tcclit tke nodepool-detail CLUSTER_ID NODE_POOL_ID" >&2; exit 1; }
+    tke_nodepool_detail "$1" "$2"
     ;;
   help|-h|--help|"")
     tke_help
