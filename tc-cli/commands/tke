@@ -52,11 +52,46 @@ tke_nodes () {
     ] | @csv'
 }
 
+tke_nodepools () {
+  local id=$1
+  echo "NodePoolId,Name,LifeState,ASGStatus,Normal,Total,Desired,Min,Max,OS,ImageId,Runtime"
+  tccli tke DescribeClusterNodePools --cli-unfold-argument --ClusterId "$id" --output json | jq -r '
+    .NodePoolSet[]? | [
+      .NodePoolId,
+      (.Name // ""),
+      (.LifeState // ""),
+      (.AutoscalingGroupStatus // ""),
+      (.NodeCountSummary.AutoscalingAdded.Normal // 0 | tostring),
+      (((.NodeCountSummary.ManuallyAdded.Total // 0) + (.NodeCountSummary.AutoscalingAdded.Total // 0)) | tostring),
+      (.DesiredNodesNum // 0 | tostring),
+      (.MinNodesNum // 0 | tostring),
+      (.MaxNodesNum // 0 | tostring),
+      (.NodePoolOs // ""),
+      (.ImageId // ""),
+      (.RuntimeConfig.RuntimeType // "")
+    ] | @csv'
+}
+
+tke_os_images () {
+  echo "OsName,ImageId,Arch,Status,OsCustomizeType,Alias"
+  tccli tke DescribeOSImages --output json | jq -r '
+    .OSImageSeriesSet[]? | [
+      .OsName,
+      (.ImageId // ""),
+      (.Arch // ""),
+      (.Status // ""),
+      (.OsCustomizeType // ""),
+      (.Alias // "")
+    ] | @csv'
+}
+
 tke_help () {
   echo "tke commands:"
   echo "  ls               クラスター一覧 (DescribeClusters)"
   echo "  show CLUSTER_ID  クラスター詳細 (DescribeClusters --ClusterIds)"
   echo "  nodes CLUSTER_ID クラスターのノード一覧 (DescribeClusterInstances)"
+  echo "  nodepools CLUSTER_ID            ノードプール一覧 (DescribeClusterNodePools)"
+  echo "  os-images                       利用可能な OS イメージ一覧 (DescribeOSImages)"
   echo "  help             このヘルプを表示"
 }
 
@@ -78,6 +113,21 @@ case "$cmd" in
       tke_nodes "$1"
     else
       tke_nodes "$1" | column -t -s ','
+    fi
+    ;;
+  nodepools)
+    [[ -n "$1" ]] || { echo "usage: tcclit tke nodepools CLUSTER_ID" >&2; exit 1; }
+    if [[ "$2" == "--csv" ]]; then
+      tke_nodepools "$1"
+    else
+      tke_nodepools "$1" | column -t -s ','
+    fi
+    ;;
+  os-images|os-images-list)
+    if [[ "$1" == "--csv" ]]; then
+      tke_os_images
+    else
+      tke_os_images | column -t -s ','
     fi
     ;;
   help|-h|--help|"")

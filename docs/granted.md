@@ -33,6 +33,7 @@ direnv allow   # 初回のみ
 awst open .                        # デフォルトコンソール
 awst open s3                       # S3 コンソール
 awst open acm --region us-east-1   # ACM コンソール（リージョン指定）
+awst open s3 --print-url           # ブラウザを開かずログイン URL を stdout に出力
 awst open --servicemap             # 利用可能なサービス一覧
 ```
 

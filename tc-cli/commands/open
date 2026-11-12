@@ -9,10 +9,15 @@ tc-assume 経由で Tencent Cloud コンソールを開く。
 
 TENCENTCLOUD_PROFILE が必要（例: プロジェクトディレクトリの direnv .envrc）。
 
+--print-url を付けるとブラウザを起動せず、署名済みログイン URL を stdout に
+出力する。URL には一時認証が埋め込まれているため、ログやファイルに残さず
+そのままブラウザへ渡して消費すること。
+
 examples:
   tcclit open .                        デフォルトのコンソールを開く
   tcclit open cvm                      CVM コンソールを開く
   tcclit open -s cos                   COS コンソールを開く (tc-assume のフラグ)
+  tcclit open tke --print-url          TKE コンソールのログイン URL を出力
   tcclit open --servicemap             利用可能なサービス一覧
 
 tc-assume の設定は docs/tccli.md を参照。
