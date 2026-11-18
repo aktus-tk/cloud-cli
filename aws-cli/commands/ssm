@@ -8,9 +8,11 @@ usage() {
   cat <<EOF
 usage: awst ssm <command> [args]
 
-AWS Systems Manager（読み取り専用）。マネージドインスタンス・パラメータストア・セッションの参照。
+AWS Systems Manager。マネージドインスタンス・パラメータストア・セッションの参照とログイン。
 
 commands:
+  ssh <id|ec2-name> [--profile P]       SSM Session Manager でインスタンスにログイン
+  run <id|ec2-name> <command...>        SSM RunCommand でコマンドを非対話実行し結果を表示
   instance ls [--csv]                   マネージドインスタンス一覧（SSM インベントリ）
   instance show <id|ec2-name> [--json]  インスタンスの SSM 詳細
   param ls [--csv] [--path PREFIX]      パラメータストアの一覧
@@ -19,6 +21,10 @@ commands:
   session ls [--csv]                    アクティブな SSM セッション一覧
 
 examples:
+  awst ssm ssh i-0d12a0e0025021707
+  awst ssm ssh web01
+  awst ssm run i-0d12a0e0025021707 -- uptime
+  awst ssm run web01 -- df -h
   awst ssm instance ls
   awst ssm instance ls --csv
   awst ssm instance show web01
@@ -55,6 +61,117 @@ ssm_resolve_instance() {
   fi
   echo "instance not found: $spec" >&2
   return 1
+}
+
+ssm_login() {
+  local spec=""
+  local profile=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile|-p)
+        profile="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$spec" ]]; then
+          spec="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$spec" ]]; then
+    echo "usage: awst ssm ssh <instance-id|ec2-name> [--profile PROFILE]" >&2
+    exit 1
+  fi
+
+  local iid
+  iid="$(ssm_resolve_instance "$spec")" || exit 1
+
+  if [[ -n "$profile" ]]; then
+    exec aws --profile "$profile" ssm start-session --target "$iid"
+  else
+    exec aws ssm start-session --target "$iid"
+  fi
+}
+
+ssm_run() {
+  local spec=""
+  local timeout_secs="300"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout)
+        timeout_secs="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        if [[ -z "$spec" ]]; then
+          spec="$1"
+        else
+          break
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$spec" || $# -eq 0 ]]; then
+    echo "usage: awst ssm run <instance-id|ec2-name> <command...> [--timeout SECONDS]" >&2
+    exit 1
+  fi
+
+  local iid
+  iid="$(ssm_resolve_instance "$spec")" || exit 1
+
+  local cmd_str
+  cmd_str="$(printf '%s ' "$@")"
+
+  local cid
+  cid="$(aws ssm send-command \
+    --instance-ids "$iid" \
+    --document-name "AWS-RunShellScript" \
+    --comment "cloud-cli awst ssm run" \
+    --timeout-seconds "$timeout_secs" \
+    --parameters "commands=[\"$cmd_str\"]" \
+    --output text --query 'Command.CommandId')"
+
+  # send-command は返却直後に結果を取得できないことがあるため少し待つ
+  sleep 2
+
+  local elapsed=0
+  while true; do
+    local status
+    status="$(aws ssm list-command-invocations --command-id "$cid" \
+      --output text --query 'CommandInvocations[0].Status' 2>/dev/null || echo "Pending")"
+    case "$status" in
+      Success|Failed|Cancelled|TimedOut) break ;;
+    esac
+    if [[ "$elapsed" -ge "$timeout_secs" ]]; then
+      echo "command invocation timed out (CommandId: $cid, last status: $status)" >&2
+      echo "CommandId: $cid" 
+      exit 1
+    fi
+    sleep 3
+    elapsed=$((elapsed + 3))
+  done
+
+  aws ssm list-command-invocations --command-id "$cid" --detail \
+    --output json | jq -r --arg status "$status" '
+    .CommandInvocations[0] |
+    "CommandId: \(.CommandId)",
+    "Status: \(.Status)",
+    "",
+    (.CommandPlugins[0].Output // "-")
+  '
+
+  [[ "$status" == "Success" ]] || exit 1
 }
 
 instance_ls_csv() {
@@ -247,6 +364,12 @@ session_ls_csv() {
 }
 
 case "$sub" in
+  ssh|login)
+    ssm_login "$@"
+    ;;
+  run|exec)
+    ssm_run "$@"
+    ;;
   instance)
     inst_cmd="${1:-}"
     shift || true
