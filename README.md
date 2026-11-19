@@ -572,6 +572,9 @@ tcclit lb targets NAME|ID        # バックエンド一覧
 #### VPC
 
 ```bash
+tcclit vpc ls                              # VPC 一覧 (vpc-id, name, cidr, default)
+tcclit vpc subnet ls                       # サブネット一覧 (subnet-id, vpc-id, name, cidr, zone)
+tcclit vpc route ls                       # ルートテーブルのルート一覧 (route-table-id, vpc-id, name, destination, gateway, type, enabled, description)
 tcclit vpc sg ls                           # セキュリティグループ一覧 (sg-id, sg-name)
 tcclit vpc sg ls --detail                  # 全 SG の Ingress/Egress ルール（awst sg ls --detail と同じブロック形式）
 tcclit vpc sg ls --detail --cidr 18.180.232.11         # 指定 CIDR を含むルールのみ

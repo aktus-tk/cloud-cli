@@ -20,7 +20,11 @@ export VPC_DRY_RUN VPC_YES
 
 usage() {
   cat <<EOF
-usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
+usage: tcclit vpc ls
+       tcclit vpc subnet ls
+  tcclit vpc route ls
+       tcclit vpc route ls
+       tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
        tcclit vpc sg show <sg-id|name>
        tcclit vpc sg rule add <sg-id|name> --proto tcp --port 22 (--addr-template NAME | --cidr IP) [--action ACCEPT|DROP] [--desc S] [--direction ingress] [--dry-run] [--yes]
        tcclit vpc sg rule rm  <sg-id|name> --proto tcp --port 22 (--addr-template NAME | --cidr IP) [--action ACCEPT|DROP] [--direction ingress] [--dry-run] [--yes]
@@ -44,7 +48,10 @@ usage: tcclit vpc sg ls [--detail] [--cidr CIDR] [--ingress-only]
   2. NEW_IP から SSH できることを確認
   3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run # 確認後 --yes で実行
 
-ls はセキュリティグループ一覧（sg-id, sg-name）を表示する。
+ls は VPC 一覧（vpc-id, name, cidr, default）を表示する。
+subnet ls はサブネット一覧（subnet-id, vpc-id, name, cidr, zone）を表示する。
+route ls はルートテーブルのルート一覧（route-table-id, vpc-id, name, destination, gateway, type, enabled, description）を表示する。
+sg ls はセキュリティグループ一覧（sg-id, sg-name）を表示する。
 --detail を付けると SG ごとにブロック表示する（awst sg ls --detail と同じレイアウト）:
 メタデータ行 (Region/GroupName/GroupId/VpcId/Description/Tags) の後に
 Inbound / Outbound のルール表 (Dir, Proto, Ports, Action, Source|Destination) が続く。
@@ -55,12 +62,38 @@ options (ls --detail):
   --ingress-only    egress ルールを省略 (default: ingress + egress)
 
 examples:
+  tcclit vpc ls
+  tcclit vpc subnet ls
   tcclit vpc sg ls
   tcclit vpc sg ls --detail
   tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only
   tcclit vpc sg show sg-abcdefgh
   tcclit vpc sg show my-app-sg
 EOF
+}
+
+vpc_ls() {
+  echo "vpc-id,name,cidr,default"
+  tccli vpc DescribeVpcs --output json \
+    | jq -r '.VpcSet[]? | [.VpcId, (.VpcName // ""), .CidrBlock, (.IsDefault // false | tostring)] | @csv'
+}
+
+subnet_ls() {
+  echo "subnet-id,vpc-id,name,cidr,zone"
+  tccli vpc DescribeSubnets --output json \
+    | jq -r '.SubnetSet[]? | [.SubnetId, .VpcId, (.SubnetName // ""), .CidrBlock, (.Zone // "")] | @csv'
+}
+
+subnet_ls() {
+  echo "subnet-id,vpc-id,name,cidr,zone"
+  tccli vpc DescribeSubnets --output json \
+    | jq -r '.SubnetSet[]? | [.SubnetId, .VpcId, (.SubnetName // ""), .CidrBlock, (.Zone // "")] | @csv'
+}
+
+route_ls() {
+  echo "route-table-id,vpc-id,name,destination,gateway,type,enabled,description"
+  tccli vpc DescribeRouteTables --output json \
+    | jq -r '.RouteTableSet[]? | . as $rt | (.RouteSet[]?) | [$rt.RouteTableId, $rt.VpcId, ($rt.RouteTableName // ""), (.DestinationCidrBlock // .DestinationIpv6CidrBlock // ""), ((.GatewayType // "") + ":" + (.GatewayId // "")), (.RouteType // ""), (.Enabled // false | tostring), (.RouteDescription // "")] | @csv'
 }
 
 sg_resolve_id() {
@@ -613,6 +646,39 @@ sg_rule_rm() {
 }
 
 case "$cmd" in
+  ls|list)
+    vpc_ls
+    ;;
+  subnet)
+    case "${1:-}" in
+      ls|list|"")
+        subnet_ls
+        ;;
+      help|-h|--help)
+        echo "usage: tcclit vpc subnet ls"
+        ;;
+      *)
+        echo "unknown: ${1:-}" >&2
+        echo "run: tcclit vpc help" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  route)
+    case "${1:-}" in
+      ls|list|"")
+        route_ls
+        ;;
+      help|-h|--help)
+        echo "usage: tcclit vpc route ls"
+        ;;
+      *)
+        echo "unknown: ${1:-}" >&2
+        echo "run: tcclit vpc help" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   sg)
     case "${1:-}" in
       rule)
@@ -685,6 +751,9 @@ case "$cmd" in
   help|-h|--help|"")
     echo
     echo "Examples:"
+    echo "  tcclit vpc ls"
+    echo "  tcclit vpc subnet ls"
+    echo "  tcclit vpc route ls"
     echo "  tcclit vpc sg ls"
     echo "  tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only"
     echo "  tcclit vpc sg show my-app-sg"
