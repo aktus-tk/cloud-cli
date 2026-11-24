@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -e
+
+source "$(dirname "$(readlink -f "$0")")/_lib/cf.sh"
+
+cmd=$1
+shift || true
+
+# Zero Trust Gateway rules の一覧。type で dns / http / network に絞り込む。
+# 絞り込みは cf の --filter filters:<type> を使用する。
+gateway_list() {
+  local type="${1:-}"
+  local -a args=(zero-trust gateway rules list)
+  case "$type" in
+    ""|dns|http|network) ;;
+    *)
+      echo "unknown gateway type: $type (dns / http / network)" >&2
+      exit 1
+      ;;
+  esac
+  if [[ -n "$type" ]]; then args+=(--filter "filters:$type"); fi
+  cf_debug_exit "${args[@]}"
+  echo -e "Precedence\tName\tAction\tEnabled\tFilters\tID"
+  "$CF_BIN" "${args[@]}" | jq -r '
+    .result[]?
+    | [
+        ((.precedence // "") | tostring),
+        (.name // ""),
+        (.action // ""),
+        ((.enabled // false) | tostring),
+        ((.filters // []) | join(",")),
+        (.id // "")
+      ]
+    | @tsv
+  ' | sort -n | cf_table
+}
+
+usage() {
+  cat <<EOF
+usage: cft gateway <command> [dns|http|network]
+
+Zero Trust Gateway rules の調査（読み取り専用）
+
+commands:
+  list [TYPE]       Gateway rules 一覧 (cf zero-trust gateway rules list)
+                    TYPE は dns / http / network で絞り込み（--filter filters:TYPE）
+  --json            cf の JSON をそのまま出力
+  raw ARGS...       公式 cf CLI にそのまま委譲
+
+examples:
+  cft gateway list
+  cft gateway list dns
+  cft gateway list http --json
+EOF
+}
+
+case "$cmd" in
+  ls|list)
+    if [[ "${1:-}" == "--json" ]]; then
+      _type="${2:-}"
+      case "$_type" in
+        ""|dns|http|network) ;;
+        *) echo "unknown gateway type: $_type (dns / http / network)" >&2; exit 1 ;;
+      esac
+      cf_json zero-trust gateway rules list $( [[ -n "$_type" ]] && echo --filter "filters:$_type" )
+    else
+      gateway_list "${1:-}"
+    fi
+    ;;
+  raw)
+    exec "$CF_BIN" "$@"
+    ;;
+  help|-h|--help|"")
+    usage
+    ;;
+  *)
+    echo "unknown gateway command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

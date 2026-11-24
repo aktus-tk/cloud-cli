@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# cft テスト用の cf stub。実 API を呼ばず fixture JSON を返す。
+set -e
+
+case "$*" in
+  "tunnels list")
+    cat "$(dirname "$0")/../fixtures/tunnels_list.json"
+    ;;
+  "tunnels get ffffffff-1111-2222-3333-444444444444")
+    cat "$(dirname "$0")/../fixtures/tunnels_get.json"
+    ;;
+  "network routes cidr list")
+    cat "$(dirname "$0")/../fixtures/routes_list.json"
+    ;;
+  "zero-trust gateway rules list")
+    cat "$(dirname "$0")/../fixtures/gateway_rules.json"
+    ;;
+  "zero-trust gateway rules list --filter filters:dns")
+    jq --arg t dns '.result |= map(select((.filters // []) | index($t)))' \
+      < "$(dirname "$0")/../fixtures/gateway_rules.json"
+    ;;
+  "zero-trust gateway rules list --filter filters:http")
+    jq --arg t http '.result |= map(select((.filters // []) | index($t)))' \
+      < "$(dirname "$0")/../fixtures/gateway_rules.json"
+    ;;
+  "zero-trust gateway rules list --filter filters:network")
+    jq --arg t network '.result |= map(select((.filters // []) | index($t)))' \
+      < "$(dirname "$0")/../fixtures/gateway_rules.json"
+    ;;
+  "zero-trust devices list")
+    cat "$(dirname "$0")/../fixtures/devices_list.json"
+    ;;
+  "zero-trust access users list")
+    cat "$(dirname "$0")/../fixtures/users_list.json"
+    ;;
+  --help*)
+    echo "The Cloudflare CLI"
+    ;;
+  *)
+    echo "stub cf: unknown args: $*" >&2
+    exit 1
+    ;;
+esac

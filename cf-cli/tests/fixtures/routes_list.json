@@ -1,0 +1,17 @@
+{
+  "result": [
+    {
+      "id": "route-1",
+      "network": "10.0.0.0/8",
+      "tunnel_id": "ffffffff-1111-2222-3333-444444444444",
+      "comment": "prod vpc"
+    },
+    {
+      "id": "route-2",
+      "network": "192.168.1.0/24",
+      "tunnel_id": "dddddddd-1111-2222-3333-444444444444",
+      "comment": "dev vpc"
+    }
+  ],
+  "success": true
+}

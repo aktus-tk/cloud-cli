@@ -1,0 +1,19 @@
+{
+  "result": [
+    {
+      "id": "u1",
+      "name": "User One",
+      "email": "user@example.com",
+      "status": "active",
+      "last_seen_at": "2026-11-20T00:00:00Z"
+    },
+    {
+      "id": "u2",
+      "name": "User Two",
+      "email": "user2@example.com",
+      "status": "pending",
+      "last_seen_at": null
+    }
+  ],
+  "success": true
+}

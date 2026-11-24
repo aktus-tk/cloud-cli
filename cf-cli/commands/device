@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -e
+
+source "$(dirname "$(readlink -f "$0")")/_lib/cf.sh"
+
+cmd=$1
+shift || true
+
+# Zero Trust (WARP) 登録デバイス一覧
+# cf zero-trust devices list
+device_ls() {
+  cf_debug_exit zero-trust devices list
+  echo -e "Name\tEmail\tModel\tOS\tVersion\tStatus\tID"
+  "$CF_BIN" zero-trust devices list | jq -r '
+    .result[]?
+    | [
+        (.name // ""),
+        (.user.email // ""),
+        (.model // ""),
+        (.os // ""),
+        (.os_version // ""),
+        (.status // ""),
+        (.id // "")
+      ]
+    | @tsv
+  ' | sort | cf_table
+}
+
+usage() {
+  cat <<EOF
+usage: cft device <command>
+
+Zero Trust 登録デバイスの調査（読み取り専用）
+
+commands:
+  list              登録デバイス一覧 (cf zero-trust devices list)
+  --json            cf の JSON をそのまま出力
+  raw ARGS...       公式 cf CLI にそのまま委譲
+
+examples:
+  cft device list
+  cft device list --json
+EOF
+}
+
+case "$cmd" in
+  ls|list)
+    if [[ "${1:-}" == "--json" ]]; then
+      cf_json zero-trust devices list
+    else
+      device_ls
+    fi
+    ;;
+  raw)
+    exec "$CF_BIN" "$@"
+    ;;
+  help|-h|--help|"")
+    usage
+    ;;
+  *)
+    echo "unknown device command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

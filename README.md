@@ -81,6 +81,7 @@ export PATH="$HOME/bin:$PATH"
 - **AWS**: `aws` CLI ([インストールガイド](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html))
 - **GCP**: `gcloud` CLI ([インストールガイド](https://cloud.google.com/sdk/docs/install))
 - **Tencent Cloud**: `tccli` ([インストールガイド](https://cloud.tencent.com/document/product/440/34011))
+- **Cloudflare**: `cf` CLI (v1.0.0-rc.4, 公式 Cloudflare CLI)
 
 認証の詳細:
 
@@ -602,6 +603,54 @@ tcclit vpc sg rule rm SG --proto tcp --port 22 --addr-template admin-ssh --dry-r
 #   3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run → 確認後 --yes で実行
 ```
 
+### Cloudflare CLI (`cft`)
+
+公式 `cf` CLI (v1.0.0-rc.4) の薄いラッパー。Cloudflare Tunnel / Zero Trust (Gateway rules, デバイス, ユーザー) の読み取り系調査コマンドを提供する。設定変更は行わない（Terraform 等で管理）。
+
+#### 認証
+
+`cft` は認証情報を保存しない。公式 `cf` CLI に委譲する:
+
+- `CLOUDFLARE_API_TOKEN` 環境変数、または `cf auth login`（OAuth）
+- アカウントスコープは `CLOUDFLARE_ACCOUNT_ID` 等の環境変数と `cf auth` プロファイルに従う
+
+#### Tunnel
+
+```bash
+cft tunnel list                  # トンネル一覧 (name, id, status, type, connections)
+cft tunnel show NAME             # 詳細＋コネクション（名前または UUID。曖昧な名前はエラー）
+cft tunnel status NAME           # 稼働状態とコネクション
+cft tunnel list --json           # cf の JSON をそのまま出力
+```
+
+#### Route（Tunnel のプライベートネットワーク経路）
+
+```bash
+cft route list                   # tunnel route 一覧 (network, tunnel_id, comment)
+```
+
+#### Zero Trust Gateway rules
+
+```bash
+cft gateway list                 # Gateway rules 一覧
+cft gateway list dns             # dns / http / network で絞り込み
+cft gateway list http --json
+```
+
+#### Zero Trust デバイス・ユーザー
+
+```bash
+cft device list                  # 登録デバイス一覧 (name, email, model, os, status)
+cft user list                    # Access ユーザー一覧 (name, email, status)
+```
+
+#### その他
+
+```bash
+cft --debug tunnel list          # 実行予定の cf コマンドのみ表示（実行しない）
+cft raw tunnels list             # 公式 cf CLI にそのまま委譲
+```
+
 ## プロジェクト構造
 
 各ツールは `bin/<name>` が第1引数で `commands/` 以下の実行可能スクリプトを呼び出します。サブコマンドの一覧は各スクリプトの `help` でも確認できます。
@@ -618,9 +667,13 @@ cloud-cli/
 ├── glite-cli/
 │   ├── bin/gcl       # gcloud-lite (aktus-tk/gcp) ラッパ
 │   └── commands/     # gce, firewall, sa, gcs, clb, project, network, dns
-└── tc-cli/
+├── tc-cli/
     ├── bin/          # tcclit, tccli（tc-assume 連携）
     └── commands/     # cam, cvm, vpc, teo, cdn, ssl, lb
+└── cf-cli/
+    ├── bin/cft
+    ├── commands/     # tunnel, route, gateway, device, user
+    └── tests/        # fixture テスト (run_tests.sh)
 ```
 
 Agent がコードを変更する際の規則とディレクトリの詳細は [AGENTS.md](AGENTS.md) を参照してください。

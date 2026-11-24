@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+if [[ -L "$0" ]]; then
+  _bin="$(dirname "$(readlink -f "$0")")"
+else
+  _bin="$(dirname "$0")"
+fi
+
+_debug=0
+_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --debug)
+      _debug=1
+      shift
+      ;;
+    *)
+      _args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${_args[@]}"
+
+if [[ "$_debug" -eq 1 ]]; then
+  export CLOUD_CLI_DEBUG=1
+fi
+
+COMMANDS="${_bin}/../commands"
+CMD="$1"
+
+if [[ -z "$CMD" ]]; then
+  echo "usage: cft [--debug] <command> ..."
+  echo
+  echo "global options:"
+  echo "  --debug    実行予定の cf コマンドのみ表示（実行しない / dry-run）"
+  echo
+  echo "available commands:"
+  ls "$COMMANDS" | grep -v '^_lib$'
+  echo
+  echo "認証・アカウント選択は cf CLI に委譲する:"
+  echo "  CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID 等の環境変数や"
+  echo "  cf auth プロファイルをそのまま利用する"
+  exit 1
+fi
+
+shift
+
+# raw: 公式 cf CLI にそのまま委譲
+if [[ "$CMD" == "raw" ]]; then
+  exec "${CLOUD_CLI_CF_BIN:-cf}" "$@"
+fi
+
+COMMAND="$COMMANDS/$CMD"
+
+if [[ ! -x "$COMMAND" ]]; then
+  echo "unknown command: $CMD"
+  exit 1
+fi
+
+# 引数なしなら help
+if [[ $# -eq 0 ]]; then
+  exec "$COMMAND" help
+else
+  exec "$COMMAND" "$@"
+fi

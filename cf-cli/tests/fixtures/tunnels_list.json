@@ -1,0 +1,31 @@
+{
+  "result": [
+    {
+      "id": "ffffffff-1111-2222-3333-444444444444",
+      "name": "prod-tunnel",
+      "status": "healthy",
+      "tun_type": "cfd_tunnel",
+      "created_at": "2026-01-01T00:00:00Z",
+      "connections": [
+        {"id": "conn-1", "colo_name": "nrt01", "client_version": "2024.1.0"}
+      ]
+    },
+    {
+      "id": "eeeeeeee-1111-2222-3333-444444444444",
+      "name": "prod-tunnel-2",
+      "status": "inactive",
+      "tun_type": "cfd_tunnel",
+      "created_at": "2026-02-01T00:00:00Z",
+      "connections": []
+    },
+    {
+      "id": "dddddddd-1111-2222-3333-444444444444",
+      "name": "dev-tunnel",
+      "status": "down",
+      "tun_type": "cfd_tunnel",
+      "created_at": "2026-03-01T00:00:00Z",
+      "connections": []
+    }
+  ],
+  "success": true
+}
