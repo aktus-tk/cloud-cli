@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub=$1
+shift || true
+
+usage() {
+  echo "snapshot commands:"
+  echo "  snapshot ls [--volume VOL_ID] [--csv] [--json]  自アカウントの EBS スナップショット一覧"
+}
+
+snapshot_ls_csv() {
+  echo "SnapshotId,VolumeId,StartTime,State,Progress,SizeGiB,Name,Description"
+  echo "$1" | jq -r '
+    [.Snapshots[] | {
+      SnapshotId,
+      VolumeId,
+      StartTime: (.StartTime // ""),
+      State,
+      Progress: (.Progress // ""),
+      SizeGiB: .VolumeSize,
+      Name: ((.Tags // []) | map(select(.Key == "Name")) | map(.Value) | join(";")),
+      Description: (.Description // "")
+    }]
+    | sort_by(.VolumeId, .StartTime)
+    | .[]
+    | [.SnapshotId, .VolumeId, .StartTime, .State, .Progress, (.SizeGiB | tostring), .Name, .Description]
+    | @tsv
+  ' | tr '\t' ','
+}
+
+case "$sub" in
+  ls)
+    volume=""
+    output="table"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --volume)
+          volume="${2:-}"
+          shift 2
+          ;;
+        --csv)
+          output="csv"
+          shift
+          ;;
+        --json)
+          output="json"
+          shift
+          ;;
+        *)
+          echo "unknown option: $1 (awst snapshot help)" >&2
+          exit 1
+          ;;
+      esac
+    done
+
+    local_args=()
+    if [[ -n "$volume" ]]; then
+      local_args+=(--filters "Name=volume-id,Values=$volume")
+    fi
+
+    if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+      printf '%q ' aws ec2 describe-snapshots --owner-ids self --output json "${local_args[@]+"${local_args[@]}"}"
+      echo
+      exit 0
+    fi
+
+    # shellcheck disable=SC2086
+    json="$(aws ec2 describe-snapshots --owner-ids self --output json ${local_args[@]+"${local_args[@]}"})"
+
+    case "$output" in
+      json)
+        echo "$json" | jq '
+          [.Snapshots[] | {
+            SnapshotId,
+            VolumeId,
+            StartTime: (.StartTime // ""),
+            State,
+            Progress: (.Progress // ""),
+            SizeGiB: .VolumeSize,
+            Tags: ((.Tags // []) | map("\(.Key)=\(.Value)") | join(";")),
+            Description: (.Description // "")
+          }]
+          | sort_by(.VolumeId, .StartTime)
+        '
+        ;;
+      csv)
+        snapshot_ls_csv "$json"
+        ;;
+      table)
+        snapshot_ls_csv "$json" | column -s, -t
+        ;;
+    esac
+  ;;
+  help|--help|-h|"")
+    usage
+  ;;
+  *)
+    usage
+    exit 1
+  ;;
+esac

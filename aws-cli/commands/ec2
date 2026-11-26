@@ -322,7 +322,7 @@ lt_show() {
 }
 
 ebs_ls_csv() {
-  echo "VolumeId,SizeGiB,Type,State,AZ,CreateTime,Name,AttachedInstanceId"
+  echo "VolumeId,SizeGiB,Type,State,AZ,CreateTime,Name,Tags,AttachedInstanceId,Device"
   echo "$1" | jq -r '
     [.Volumes[] | {
       VolumeId,
@@ -332,11 +332,13 @@ ebs_ls_csv() {
       AZ: .AvailabilityZone,
       CreateTime,
       Name: (([.Tags[]? | select(.Key == "Name") | .Value][0]) // ""),
-      AttachedInstanceId: (.Attachments[0].InstanceId // "")
+      Tags: ((.Tags // []) | map(select(.Key != "Name")) | map("\(.Key)=\(.Value)") | join(";")),
+      AttachedInstanceId: (.Attachments[0].InstanceId // ""),
+      Device: (.Attachments[0].Device // "")
     }]
     | sort_by(.VolumeId)
     | .[]
-    | [.VolumeId, (.SizeGiB | tostring), .Type, .State, .AZ, .CreateTime, .Name, .AttachedInstanceId]
+    | [.VolumeId, (.SizeGiB | tostring), .Type, .State, .AZ, .CreateTime, .Name, .Tags, .AttachedInstanceId, .Device]
     | @tsv
   ' | tr '\t' ','
 }
@@ -399,7 +401,9 @@ ebs_ls() {
           AZ: .AvailabilityZone,
           CreateTime,
           Name: (([.Tags[]? | select(.Key == "Name") | .Value][0]) // ""),
-          AttachedInstanceId: (.Attachments[0].InstanceId // "")
+          Tags: ((.Tags // []) | map(select(.Key != "Name")) | map("\(.Key)=\(.Value)") | join(";")),
+          AttachedInstanceId: (.Attachments[0].InstanceId // ""),
+          Device: (.Attachments[0].Device // "")
         }]
         | sort_by(.VolumeId)
       '
@@ -643,6 +647,10 @@ case "$cmd" in
     esac
   ;;
 
+  dlm)
+    exec "$(dirname "$0")/dlm" "$@"
+  ;;
+
   ebs)
     ebs_cmd=$1
     shift || true
@@ -656,11 +664,15 @@ case "$cmd" in
       summary)
         ebs_summary "$@"
         ;;
+      snapshot)
+        exec "$(dirname "$0")/snapshot" "$@"
+        ;;
       *)
         echo "ebs commands:"
         echo "  ebs ls [--state available|in-use|all] [--csv] [--json]  EBS ボリューム一覧"
         echo "  ebs show <volume-id> [--json]                          ボリューム詳細"
         echo "  ebs summary [--csv]                                    State/Type/AZ 別の集計"
+        echo "  ebs snapshot ls [--volume VOL_ID] [--csv] [--json]     スナップショット一覧"
         ;;
     esac
   ;;
@@ -677,6 +689,7 @@ case "$cmd" in
     echo "  stop NAME"
     echo "  sg_rules"
     echo "  launch-template  起動テンプレート関連を表示（launch-template ls / show / versions、lt は alias）"
-    echo "  ebs        EBS ボリューム関連（ebs ls / ebs show / ebs summary）"
+echo "  ebs        EBS ボリューム関連（ebs ls / ebs show / ebs summary / ebs snapshot ls）"
+    echo "  dlm        Data Lifecycle Manager ポリシー（dlm ls / dlm show）"
   ;;
 esac

@@ -134,7 +134,7 @@ awst ec2 sg_rules NAME   # セキュリティグループルール表示
 #### EBS ボリューム
 
 ```bash
-awst ec2 ebs ls                       # EBS ボリューム一覧
+awst ec2 ebs ls                       # EBS ボリューム一覧（デバイス名付き）
 awst ec2 ebs ls --state available     # 未アタッチ（available）のみ
 awst ec2 ebs ls --state in-use        # アタッチ済みのみ
 awst ec2 ebs ls --csv                 # CSV 形式
@@ -157,6 +157,29 @@ awst ec2 launch-template versions web-lt    # 全バージョン一覧
 ```
 
 `lt` は `launch-template` のエイリアス（例: `awst ec2 lt show web-lt`）。
+
+#### DLM (Data Lifecycle Manager)
+
+```bash
+awst ec2 dlm ls                  # ライフサイクルポリシー一覧
+awst ec2 dlm ls --csv            # CSV 形式
+awst ec2 dlm ls --json           # JSON 形式
+awst ec2 dlm show policy-xxxx    # ポリシー詳細（スケジュール・保持期間・タグなど）
+awst ec2 dlm show policy-xxxx --json  # JSON 形式
+```
+
+`awst dlm ...` でも同じ（`ec2 dlm` のエイリアス）。
+
+#### EBS スナップショット
+
+```bash
+awst ec2 ebs snapshot ls                        # 自アカウントのスナップショット一覧（VolumeId / StartTime 順）
+awst ec2 ebs snapshot ls --volume vol-xxxxxxxx  # 特定ボリュームのスナップショットのみ
+awst ec2 ebs snapshot ls --csv                  # CSV 形式
+awst ec2 ebs snapshot ls --json                 # JSON 形式
+```
+
+`awst snapshot ls ...` も同じ（エイリアス）。
 
 #### Auto Scaling Group
 

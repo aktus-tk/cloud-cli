@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+sub=$1
+shift || true
+
+usage() {
+  echo "dlm commands:"
+  echo "  dlm ls [--csv] [--json]      ライフサイクルポリシー一覧"
+  echo "  dlm show <policy-id> [--json]  ポリシー詳細"
+}
+
+dlm_ls_json() {
+  # AWS CLI v2: get-lifecycle-policies / v1: list-lifecycle-policies
+  local out
+  if ! out="$(aws dlm get-lifecycle-policies --output json 2>&1)"; then
+    if [[ "$out" == *"Found invalid choice"* || "$out" == *"InvalidChoices"* ]]; then
+      out="$(aws dlm list-lifecycle-policies --output json)"
+    else
+      printf '%s\n' "$out" >&2
+      return 1
+    fi
+  fi
+  printf '%s\n' "$out"
+}
+
+# Tags は DLM API バージョンにより 配列[{Key,Value}] / object(map) / null のいずれかで返る
+readonly JQ_DEFS='
+def tagstr:
+  if type == "object" then to_entries | map("\(.key)=\(.value)") | join(", ")
+  elif type == "array" then map("\(.Key)=\(.Value)") | join(", ")
+  else "" end;
+
+def tagname:
+  (.Tags // {} |
+    if type == "object" then (.Name // "")
+    else (map(select(.Key == "Name")) | map(.Value) | join(";"))
+    end);
+'
+
+dlm_ls_csv() {
+  local json
+  json="$(dlm_ls_json)"
+  echo "$json" | jq -r "${JQ_DEFS}"'
+    [.Policies[] | {
+      PolicyId,
+      State,
+      Description: (.Description // ""),
+      Name: tagname
+    }]
+    | sort_by(.PolicyId)
+    | .[]
+    | [.PolicyId, .State, .Description, .Name]
+    | @tsv
+  ' | tr '\t' ','
+}
+
+dlm_show() {
+  local policy_id=""
+  local output="table"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        output="json"
+        shift
+        ;;
+      *)
+        if [[ -z "$policy_id" ]]; then
+          policy_id="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$policy_id" ]]; then
+    echo "usage: awst dlm show <policy-id> [--json]" >&2
+    exit 1
+  fi
+
+  local -a cmd=(dlm get-lifecycle-policy --policy-id "$policy_id" --output json)
+
+  if [[ -n "${CLOUD_CLI_DEBUG:-}" ]]; then
+    printf '%q ' aws "${cmd[@]}"
+    echo
+    exit 0
+  fi
+
+  local json
+  json="$(aws "${cmd[@]}")"
+
+  if [[ "$output" == "json" ]]; then
+    echo "$json" | jq '.Policy'
+    return 0
+  fi
+
+  echo "$json" | jq -r "${JQ_DEFS}"'
+    .Policy |
+    "PolicyId: \(.PolicyId)",
+    "Arn: \(.Arn // "-")",
+    "Name: \((.PolicyDetails.Schedules[0].Name // "-"))",
+    "Description: \(.Description // "-")",
+    "State: \(.State)",
+    "Status: \(.Status // "-")",
+    "Type: \(.PolicyType // "-")",
+    "ResourceTypes: \((.PolicyDetails.ResourceTypes // []) | join(", "))",
+    "TargetTags: \((.PolicyDetails.TargetTags // []) | tagstr)",
+    (if ((.PolicyDetails.Schedules // []) | length) > 0 then
+      "Schedules:",
+      (.PolicyDetails.Schedules[] |
+        "  " + (.Name // "(unnamed)") + ":",
+        "    Interval: \(.CreateRule.Interval) \(.CreateRule.IntervalUnit) at \((.CreateRule.Times // []) | join(","))",
+        "    Retain: \(.RetainRule.Count // "-") (\(.RetainRule.Interval // "count") \(.RetainRule.IntervalUnit // ""))",
+        "    CopyTags: \(.CopyTags // false)",
+        (if ((.TagsToAdd // []) | length) > 0 then
+          "    TagsToAdd: " + (.TagsToAdd | tagstr)
+        else empty end),
+        (if .FastStartRule.Enabled then
+          "    FastRestore: enabled (TargetTags: " + (.FastStartRule.TargetTags // [] | tagstr) + ")"
+        else empty end)
+      )
+    else "Schedules: -" end),
+    (if ((.Tags // {}) | length) > 0 then
+      "Tags:",
+      ((.Tags // {}) | tagstr | split(", ")[] | "  " + .)
+    else empty end)
+  '
+}
+
+case "$sub" in
+  ls)
+    if [[ " $* " == *" --json "* ]]; then
+      dlm_ls_json | jq "${JQ_DEFS}"'[.Policies[] | {
+        PolicyId,
+        State,
+        Description: (.Description // ""),
+        Name: tagname
+      }] | sort_by(.PolicyId)'
+    elif [[ "$1" == "--csv" ]]; then
+      dlm_ls_csv
+    else
+      dlm_ls_csv | column -s, -t
+    fi
+  ;;
+  show)
+    dlm_show "$@"
+  ;;
+  help|--help|-h|"")
+    usage
+  ;;
+  *)
+    usage
+    exit 1
+  ;;
+esac
