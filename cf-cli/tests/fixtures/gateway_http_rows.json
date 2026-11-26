@@ -1,0 +1,16 @@
+[
+  {
+    "Datetime": "2026-11-25T01:10:00Z",
+    "Email": "user@example.com",
+    "Action": "block",
+    "Target": "grok.com/api",
+    "HTTPStatusCode": 403
+  },
+  {
+    "Datetime": "2026-11-25T01:05:00Z",
+    "Email": "user@example.com",
+    "Action": "allow",
+    "Target": "api.cursor.sh",
+    "HTTPStatusCode": 200
+  }
+]

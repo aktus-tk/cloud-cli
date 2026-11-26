@@ -2,6 +2,14 @@
 # cft テスト用の cf stub。実 API を呼ばず fixture JSON を返す。
 set -e
 
+# wrapper が機械処理用に付ける -q / --quiet をここで剥がす
+args=()
+for a in "$@"; do
+  [[ "$a" == "-q" || "$a" == "--quiet" ]] && continue
+  args+=("$a")
+done
+set -- "${args[@]}"
+
 case "$*" in
   "tunnels list")
     cat "$(dirname "$0")/../fixtures/tunnels_list.json"
@@ -16,16 +24,22 @@ case "$*" in
     cat "$(dirname "$0")/../fixtures/gateway_rules.json"
     ;;
   "zero-trust gateway rules list --filter filters:dns")
-    jq --arg t dns '.result |= map(select((.filters // []) | index($t)))' \
+    jq --arg t dns 'map(select((.filters // []) | index($t)))' \
       < "$(dirname "$0")/../fixtures/gateway_rules.json"
     ;;
   "zero-trust gateway rules list --filter filters:http")
-    jq --arg t http '.result |= map(select((.filters // []) | index($t)))' \
+    jq --arg t http 'map(select((.filters // []) | index($t)))' \
       < "$(dirname "$0")/../fixtures/gateway_rules.json"
     ;;
   "zero-trust gateway rules list --filter filters:network")
-    jq --arg t network '.result |= map(select((.filters // []) | index($t)))' \
+    jq --arg t network 'map(select((.filters // []) | index($t)))' \
       < "$(dirname "$0")/../fixtures/gateway_rules.json"
+    ;;
+  "zero-trust access applications list")
+    cat "$(dirname "$0")/../fixtures/access_applications.json"
+    ;;
+  "logs query"*)
+    cat "$(dirname "$0")/../fixtures/gateway_http_rows.json"
     ;;
   "zero-trust devices list")
     cat "$(dirname "$0")/../fixtures/devices_list.json"

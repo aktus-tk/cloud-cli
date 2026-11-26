@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# cft テスト用の curl stub。実 API を呼ばず fixture JSON を返す。
+url="${@: -1}"
+
+case "$url" in
+  */accounts)
+    printf '{"result": [{"id": "acct-1", "name": "test-account"}], "success": true}'
+    ;;
+  *access/logs/access_requests*)
+    cat "$(dirname "$0")/../fixtures/access_requests.json"
+    ;;
+  *)
+    printf '{"success": false, "errors": [{"code": 7003, "message": "stub curl: unknown url: %s"}]}' "$url" >&2
+    exit 1
+    ;;
+esac

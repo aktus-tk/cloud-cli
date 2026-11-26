@@ -9,8 +9,8 @@ shift || true
 tunnel_ls() {
   cf_debug_exit tunnels list
   echo -e "Name\tID\tStatus\tType\tConnections\tCreatedAt"
-  "$CF_BIN" tunnels list | jq -r '
-    .result[]?
+  cf_list_json tunnels list | jq -r '
+    .[]
     | [
         .name,
         .id,
@@ -27,8 +27,8 @@ tunnel_show() {
   cf_debug_exit "tunnels get <resolved-tunnel-id>"
   local id
   id="$(tunnel_get_id "$1")"
-  "$CF_BIN" tunnels get "$id" | jq -r '
-    .result
+  cf_json tunnels get "$id" | jq -r '
+    (.result // .)
     | "ID:        \(.id)",
       "Name:      \(.name)",
       "Status:    \(.status // "-")",
@@ -46,8 +46,8 @@ tunnel_status() {
   cf_debug_exit "tunnels get <resolved-tunnel-id>"
   local id
   id="$(tunnel_get_id "$1")"
-  "$CF_BIN" tunnels get "$id" | jq -r '
-    .result
+  cf_json tunnels get "$id" | jq -r '
+    (.result // .)
     | "Tunnel:    \(.name) (\(.id))",
       "Status:    \(.status // "-")",
       "Connections: \((.connections // []) | length)",

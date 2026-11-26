@@ -20,14 +20,15 @@ gateway_list() {
   esac
   if [[ -n "$type" ]]; then args+=(--filter "filters:$type"); fi
   cf_debug_exit "${args[@]}"
-  echo -e "Precedence\tName\tAction\tEnabled\tFilters\tID"
-  "$CF_BIN" "${args[@]}" | jq -r '
-    .result[]?
+  echo -e "Precedence\tName\tAction\tEnabled\tTraffic\tFilters\tID"
+  cf_list_json "${args[@]}" | jq -r '
+    .[]
     | [
         ((.precedence // "") | tostring),
         (.name // ""),
         (.action // ""),
         ((.enabled // false) | tostring),
+        (.traffic // ""),
         ((.filters // []) | join(",")),
         (.id // "")
       ]
@@ -35,22 +36,91 @@ gateway_list() {
   ' | sort -n | cf_table
 }
 
+# Zero Trust Gateway の allow/block ログ。Cloudflare Logs Explorer (SQL) で
+# gateway_http / gateway_dns / gateway_network データセットを照会する。
+# API token に Logs (Logs Explorer Read) 権限が必要。
+gateway_logs() {
+  local dataset="${1:-http}"
+  shift || true
+  local action="" hours=24 limit=50 as_json=0 raw_sql=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --action) action="$2"; shift 2 ;;
+      --hours) hours="$2"; shift 2 ;;
+      --limit) limit="$2"; shift 2 ;;
+      --json) as_json=1; shift ;;
+      --raw) raw_sql="$2"; shift 2 ;;
+      *) echo "unknown gateway logs option: $1" >&2; exit 1 ;;
+    esac
+  done
+  local table cols target_col extra_col extra_label
+  case "$dataset" in
+    http)    table=gateway_http;    target_col=URL;          extra_col="HTTPStatusCode"; extra_label=Status ;;
+    dns)     table=gateway_dns;     target_col=QueryName;    extra_col="QueryType";      extra_label=Type ;;
+    network) table=gateway_network; target_col=SNI;          extra_col="DestinationIP";  extra_label=DstIP ;;
+    *) echo "unknown gateway dataset: $dataset (http / dns / network)" >&2; exit 1 ;;
+  esac
+  local sql
+  if [[ -n "$raw_sql" ]]; then
+    sql="$raw_sql"
+  else
+    sql="SELECT Datetime, Email, Action, ${target_col} AS Target, ${extra_col} AS Extra FROM ${table} WHERE Datetime >= now() - INTERVAL '${hours}' HOUR"
+    if [[ -n "$action" ]]; then
+      sql+=" AND Action = '${action}'"
+    fi
+    sql+=" ORDER BY Datetime DESC LIMIT ${limit}"
+  fi
+  cf_debug_exit "logs query --body ${sql}"
+  local out
+  if ! out="$(cf_json logs query --body "$sql")"; then
+    return 1
+  fi
+  local rows
+  rows="$(printf '%s\n' "$out" | jq -c 'if type == "array" then . else (.result // .data // .rows // []) end')"
+  if [[ "$as_json" -eq 1 ]]; then
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  echo -e "Time\tUser\tAction\tTarget\t${extra_label}"
+  printf '%s\n' "$rows" | jq -r --arg extra "$extra_col" '
+    .[]
+    | [
+        (.Datetime // .datetime // ""),
+        (.Email // .email // ""),
+        (.Action // .action // ""),
+        (.Target // ""),
+        ((.[$extra]) // "" | tostring)
+      ]
+    | @tsv
+  ' | cf_table
+}
+
 usage() {
   cat <<EOF
 usage: cft gateway <command> [dns|http|network]
 
-Zero Trust Gateway rules の調査（読み取り専用）
+Zero Trust Gateway の調査（読み取り専用）
 
 commands:
   list [TYPE]       Gateway rules 一覧 (cf zero-trust gateway rules list)
                     TYPE は dns / http / network で絞り込み（--filter filters:TYPE）
+  logs [DATASET]    Gateway 判定ログ (allow / block) の照会 (cf logs query / SQL)
+                    DATASET: http (既定) / dns / network
+                    options:
+                      --action allow|block   判定で絞り込み
+                      --hours N              過去 N 時間 (既定 24)
+                      --limit N              最大 N 件 (既定 50)
+                      --json                 JSON で出力
+                      --raw "SQL"            SQL をそのまま指定
+                    ※ API token に Logs 権限 (Logs Explorer Read) が必要
   --json            cf の JSON をそのまま出力
   raw ARGS...       公式 cf CLI にそのまま委譲
 
 examples:
   cft gateway list
   cft gateway list dns
-  cft gateway list http --json
+  cft gateway logs http --action block
+  cft gateway logs http --hours 48 --limit 100
 EOF
 }
 
@@ -66,6 +136,9 @@ case "$cmd" in
     else
       gateway_list "${1:-}"
     fi
+    ;;
+  logs)
+    gateway_logs "${1:-http}" "${@:2}"
     ;;
   raw)
     exec "$CF_BIN" "$@"

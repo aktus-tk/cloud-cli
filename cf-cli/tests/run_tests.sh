@@ -26,7 +26,7 @@ check() {
 }
 
 run() {
-  ( set +e; PATH="$STUB_DIR:$PATH" "$ROOT/bin/cft" "$@" ) 2>&1
+  ( set +e; export CLOUD_CLI_CURL="$STUB_DIR/curl" CLOUDFLARE_API_TOKEN=test-token; PATH="$STUB_DIR:$PATH" "$ROOT/bin/cft" "$@" ) 2>&1
   return 0
 }
 
@@ -76,6 +76,7 @@ check "gateway list row"     "block-social" "$out"
 # gateway list dns (filter)
 out=$(run gateway list dns)
 check "gateway dns filter"   "force-safe-search" "$out"
+check "gateway traffic col"  'dns.fqdn in {"social.example.com"}' "$out"
 if [[ "$out" == *"block-social"* ]]; then
   fail=$((fail+1)); echo "FAIL: gateway list dns should filter to dns rules"
 else
@@ -85,6 +86,27 @@ fi
 # gateway list --json
 out=$(run gateway list --json)
 check "gateway json"         '"block-social"' "$out"
+
+# gateway logs (cf logs query SQL)
+out=$(run gateway logs http)
+check "gateway logs header"   $'Time\tUser\tAction\tTarget\tStatus' "$out"
+check "gateway logs block"    "grok.com/api" "$out"
+check "gateway logs action"   "block" "$out"
+
+out=$(run gateway logs http --json)
+check "gateway logs json"     '"grok.com/api"' "$out"
+
+out=$(CLOUD_CLI_CF_BIN=cf PATH="$STUB_DIR:$PATH" CLOUD_CLI_DEBUG=1 "$ROOT/bin/cft" gateway logs http --action block)
+check "gateway logs debug"    "cf logs query" "$out"
+
+# application list
+out=$(run application list)
+check "application list row"  "redmine" "$out"
+
+# application logs (REST via stub curl)
+out=$(run application logs)
+check "application logs header" $'Time\tUser\tApp\tAction\tAllowed\tIP' "$out"
+check "application logs row"  "redmine" "$out"
 
 # device list
 out=$(run device list)

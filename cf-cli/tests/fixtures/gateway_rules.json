@@ -1,29 +1,35 @@
-{
-  "result": [
-    {
-      "id": "rule-1",
-      "name": "block-social",
-      "action": "block",
-      "enabled": true,
-      "precedence": 1,
-      "filters": ["http"]
-    },
-    {
-      "id": "rule-2",
-      "name": "force-safe-search",
-      "action": "override",
-      "enabled": true,
-      "precedence": 2,
-      "filters": ["dns"]
-    },
-    {
-      "id": "rule-3",
-      "name": "allow-internal-ssh",
-      "action": "allow",
-      "enabled": false,
-      "precedence": 3,
-      "filters": ["network"]
-    }
-  ],
-  "success": true
-}
+[
+  {
+    "id": "rule-1",
+    "name": "block-social",
+    "action": "block",
+    "enabled": true,
+    "precedence": 1,
+    "traffic": "http.request.uri.path contains \"/social\"",
+    "filters": [
+      "http"
+    ]
+  },
+  {
+    "id": "rule-2",
+    "name": "force-safe-search",
+    "action": "override",
+    "enabled": true,
+    "precedence": 2,
+    "traffic": "dns.fqdn in {\"social.example.com\"}",
+    "filters": [
+      "dns"
+    ]
+  },
+  {
+    "id": "rule-3",
+    "name": "allow-internal-ssh",
+    "action": "allow",
+    "enabled": false,
+    "precedence": 3,
+    "traffic": "net.sni eq \"internal.example.com\"",
+    "filters": [
+      "network"
+    ]
+  }
+]

@@ -11,8 +11,8 @@ shift || true
 user_ls() {
   cf_debug_exit zero-trust access users list
   echo -e "Name\tEmail\tStatus\tLastSeen\tID"
-  "$CF_BIN" zero-trust access users list | jq -r '
-    .result[]?
+  cf_list_json zero-trust access users list | jq -r '
+    .[]
     | [
         (.name // ""),
         (.email // ""),

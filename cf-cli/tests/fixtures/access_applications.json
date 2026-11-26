@@ -1,0 +1,17 @@
+{
+  "result": [
+    {
+      "id": "app-1",
+      "name": "redmine",
+      "domain": "redmine.example.com",
+      "type": "self_hosted"
+    },
+    {
+      "id": "app-2",
+      "name": "gitlab",
+      "domain": "gitlab.example.com",
+      "type": "self_hosted"
+    }
+  ],
+  "success": true
+}

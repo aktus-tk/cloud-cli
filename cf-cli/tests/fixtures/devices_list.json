@@ -1,23 +1,28 @@
-{
-  "result": [
-    {
-      "id": "device-1",
-      "name": "macbook-pro",
-      "model": "MacBook Pro",
-      "os": "macOS",
-      "os_version": "15.1",
-      "status": "online",
-      "user": {"id": "u1", "name": "User One", "email": "user@example.com"}
-    },
-    {
-      "id": "device-2",
-      "name": "iphone-15",
-      "model": "iPhone 15",
-      "os": "iOS",
-      "os_version": "18.1",
-      "status": "offline",
-      "user": {"id": "u2", "name": "User Two", "email": "user2@example.com"}
+[
+  {
+    "id": "device-1",
+    "name": "macbook-pro",
+    "model": "MacBook Pro",
+    "os": "macOS",
+    "os_version": "15.1",
+    "status": "online",
+    "user": {
+      "id": "u1",
+      "name": "User One",
+      "email": "user@example.com"
     }
-  ],
-  "success": true
-}
+  },
+  {
+    "id": "device-2",
+    "name": "iphone-15",
+    "model": "iPhone 15",
+    "os": "iOS",
+    "os_version": "18.1",
+    "status": "offline",
+    "user": {
+      "id": "u2",
+      "name": "User Two",
+      "email": "user2@example.com"
+    }
+  }
+]

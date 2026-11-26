@@ -11,8 +11,8 @@ shift || true
 route_ls() {
   cf_debug_exit network routes cidr list
   echo -e "Network\tTunnelID\tComment\tID"
-  "$CF_BIN" network routes cidr list | jq -r '
-    .result[]?
+  cf_list_json network routes cidr list | jq -r '
+    .[]
     | [
         (.network // ""),
         (.tunnel_id // ""),

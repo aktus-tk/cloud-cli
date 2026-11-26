@@ -1,5 +1,31 @@
 # cloud-cli
 
+<!-- BEGIN: RHEMS AI Operations Stack -->
+## RHEMS AI Operations Stack
+RHEMS JapanのAIクラウド運用環境は、責務ごとに独立したリポジトリで構成されています。
+```mermaid
+flowchart TD
+    O["AI Agent"] --> A["ai-ops<br>構成・手順・安全規則"]
+    A --> C["cloud-cli<br>出力抽出・整形"]
+    C --> N["Native CLI<br>aws / gcloud / tccli / kubectl"]
+    W["cl-workspaces<br>profile・region・kubeconfig"] --> N
+    T["tc-assume<br>Tencent一時認証"] --> N
+    B["cli-toolbox<br>任意の導入・更新"] -.-> C
+    B -.-> N
+```
+
+| Repository | Responsibility |
+| --- | --- |
+| [ai-ops](https://github.com/RHEMS-Japan/ai-ops) | AI Agent向けの顧客構成、調査手順、安全規則 |
+| [cloud-cli](https://github.com/RHEMS-Japan/cloud-cli) | Native CLI出力の抽出・整形・入力トークン削減 |
+| [cl-workspaces](https://github.com/RHEMS-Japan/cl-workspaces) | projectごとのprofile、region、kubeconfig管理 |
+| [tc-assume](https://github.com/RHEMS-Japan/tc-assume) | Tencent CloudのSAML認証と一時credential管理 |
+| [cli-toolbox](https://github.com/RHEMS-Japan/cli-toolbox) | CLIごとに異なる導入・更新方法を吸収する任意の環境構築ツール |
+
+各リポジトリは独立して管理されます。cli-toolboxは必須ではなく、各CLIを公式手順で導入した環境でも利用できます。
+
+<!-- END: RHEMS AI Operations Stack -->
+
 クラウドの公式 CLI を、AI Agent と人間が効率よく利用するための薄いラッパー集です。
 
 ## 目的
@@ -36,43 +62,41 @@ skill / 人間 → cloud-cli → aws / gcloud / tccli → cloud-cli → 整形�
 
 ### 1. リポジトリのクローン
 
-GitHub の clone 先にそのまま置きます（例: `~/github/aktus-tk/cloud-cli`）:
+GitHub の clone 先にそのまま置きます（例: `~/github/RHEMS-Japan/cloud-cli`）:
 
 ```bash
-mkdir -p ~/github/aktus-tk
-git clone <repository-url> ~/github/aktus-tk/cloud-cli
+mkdir -p ~/github/RHEMS-Japan
+git clone <repository-url> ~/github/RHEMS-Japan/cloud-cli
+cd ~/github/RHEMS-Japan/cloud-cli
 ```
 
-### 2. シンボリックリンクの作成
+### 2. `install.sh` の実行
 
-`~/bin` ディレクトリにシンボリックリンクを作成します:
+リポジトリ直下の `install.sh` が、`awst` / `gcloudt` / `tcclit` を `~/.local/bin` にシンボリックリンクします（clone 先のパスはスクリプトが自動で解決します。`git pull` で更新がそのまま反映されます）。
 
 ```bash
-mkdir -p ~/bin
-ln -sf ~/github/aktus-tk/cloud-cli/aws-cli/bin/awst ~/bin/awst
-ln -sf ~/github/aktus-tk/cloud-cli/g-cli/bin/gcloudt ~/bin/gcloudt
-ln -sf ~/github/aktus-tk/cloud-cli/tc-cli/bin/tcclit ~/bin/tcclit
+chmod +x install.sh
+./install.sh
 ```
 
 確認:
 
 ```bash
-ls -l ~/bin/awst ~/bin/gcloudt ~/bin/tcclit
-# 出力例:
-# lrwxrwxrwx 1 user user 56 Jun 22 12:00 awst -> ~/github/aktus-tk/cloud-cli/aws-cli/bin/awst
-# lrwxrwxrwx 1 user user 57 Jun 22 12:00 gcloudt -> ~/github/aktus-tk/cloud-cli/g-cli/bin/gcloudt
-# lrwxrwxrwx 1 user user 57 Jun 22 12:00 tcclit -> ~/github/aktus-tk/cloud-cli/tc-cli/bin/tcclit
+command -v awst
+command -v gcloudt
+command -v tcclit
+ls -l ~/.local/bin/awst ~/.local/bin/gcloudt ~/.local/bin/tcclit
 ```
-
-> **補足**: clone 先のパスが異なる場合は、上記の `ln -sf` のパスを読み替えてください。`git pull` で更新がそのまま反映されます。
 
 ### 3. PATH の設定
 
-`~/bin` が PATH に含まれていることを確認します。含まれていない場合は、`~/.bashrc` または `~/.zshrc` に追加:
+`~/.local/bin` が PATH に含まれていることを確認します。含まれていない場合は、`~/.bashrc` または `~/.zshrc` に追加:
 
 ```bash
-export PATH="$HOME/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+`install.sh` 実行時にも PATH 未設定の場合は警告が表示されます。
 
 ## 前提条件
 
@@ -85,9 +109,9 @@ export PATH="$HOME/bin:$PATH"
 
 認証の詳細:
 
-- **AWS コンソール (Granted)**: [README_granted.md](README_granted.md)
-- **Tencent Cloud (`tccli` / `tc-assume`)**: [README_tccli.md](README_tccli.md)
-- **セキュリティ・認証情報の扱い**: [SECURITY.md](SECURITY.md)（本ツールは認証情報を保存しません）
+- **AWS コンソール (Granted)**: [README_granted.md](docs/granted.md)
+- **Tencent Cloud (`tccli` / `tc-assume`)**: [README_tccli.md](docs/tccli.md)
+- **セキュリティ・認証情報の扱い**: [SECURITY.md](docs/SECURITY.md)（本ツールは認証情報を保存しません）
 
 ## 共通実行ポリシー
 
@@ -102,11 +126,14 @@ export PATH="$HOME/bin:$PATH"
 
 ### AWS CLI (`awst`)
 
-#### 認証 (saml2aws)
+#### 認証
 
 ```bash
-awst login             # saml2aws login --skip-prompt
+awst login                  # saml2aws login --skip-prompt
+awst login --aws-browsh     # tc-assume login --aws-browsh（端末内ブラウザ・profile rhems）
 ```
+
+`--aws-browsh` では `rhems` の組み込み SAML URL を使えるため `~/.aws/credentials` に `aws_login_url` が無くてもよい（tc-assume 側の既定）。profile 引数は付けません。
 
 #### AWS コンソール (Granted)
 
@@ -118,7 +145,7 @@ awst open s3 --print-url           # ブラウザを開かずログイン URL �
 awst open --servicemap             # 利用可能なサービス一覧
 ```
 
-Granted のセットアップと WSL でのブラウザ起動は [README_granted.md](README_granted.md) を参照。
+Granted のセットアップと WSL でのブラウザ起動は [README_granted.md](docs/granted.md) を参照。
 
 #### EC2 インスタンス操作
 
@@ -126,6 +153,8 @@ Granted のセットアップと WSL でのブラウザ起動は [README_granted
 awst ec2 ls              # インスタンス一覧
 awst ec2 ls --csv        # CSV 形式で出力
 awst ec2 show INSTANCE_ID  # インスタンス詳細（UserData をデコードして表示）
+awst ec2 regions         # 有効な EC2 リージョン一覧
+awst ec2 regions --csv
 awst ec2 start NAME      # インスタンスを起動
 awst ec2 stop NAME       # 実行予定コマンドのみ表示（実行しない）
 awst ec2 sg_rules NAME   # セキュリティグループルール表示
@@ -196,11 +225,23 @@ awst autoscaling launch-configuration show my-lc # 起動設定の詳細（UserD
 
 `as` は `autoscaling`、`lc` は `launch-configuration` のエイリアス（例: `awst as group show my-asg` / `awst as lc show my-lc`）。
 
+#### Resource Explorer
+
+Resource Explorer 2 が有効なアカウント向け。`list-resources` / `search` の薄いラッパー。
+
+```bash
+awst resources ls                              # リソース一覧（default view）
+awst resources ls --filter 'service:ec2' --csv
+awst resources search --type ec2:security-group # リソース検索（最大 1,000 件）
+awst resources regions sg                      # SG があるリージョンと件数
+awst resources regions --service ec2           # EC2 リソースがあるリージョン
+```
+
 #### Application Load Balancer (ALB)
 
 ```bash
 awst alb ls              # ALB 一覧（Security Groups 含む）
-awst alb listener NAME   # リスナー情報
+awst alb listener NAME   # リスナー情報（ルールの Conditions / Actions 詳細を含む）
 awst alb tg NAME         # ターゲットグループ一覧
 awst alb health TG_NAME  # ヘルスチェック結果
 awst alb rule LISTENER_ARN  # リスナールール詳細
@@ -317,6 +358,50 @@ awst s3 policy BUCKET --json    # バケットポリシー（JSON 全文）
 
 `policy` はポリシー未設定の場合 `No bucket policy: BUCKET` を表示します。
 
+#### CloudWatch
+
+```bash
+awst cw logs                            # ロググループ一覧
+awst cw logs --prefix /aws/lambda/      # プレフィックス絞り込み
+awst cw logs --csv
+
+awst cw tail /aws/lambda/my-fn                    # 最新ログ（既定 10m）
+awst cw tail /aws/lambda/my-fn --since 1h         # 1時間分
+awst cw tail /aws/lambda/my-fn --follow           # follow（tail -f 相当）
+awst cw tail /aws/lambda/my-fn --pattern ERROR    # フィルタ
+awst cw tail /aws/lambda/my-fn --format short
+
+awst cw query /aws/lambda/my-fn -q 'fields @timestamp, @message | limit 20'
+awst cw query /aws/lambda/my-fn -q 'stats count()' --since 24h
+awst cw query /aws/lambda/my-fn -q '...' --since 2026-10-01T00:00:00 --to 2026-10-02T00:00:00
+awst cw query /aws/lambda/my-fn -q '...' --json     # 生 JSON（statistics 込み）
+awst cw query /aws/lambda/my-fn -q '...' --timeout 120
+
+awst cw metrics                          # メトリクス一覧
+awst cw metrics --namespace AWS/EC2      # namespace 絞り込み
+awst cw metrics --csv / --json
+
+awst cw stat AWS/ApplicationELB RequestCount \
+  --dim LoadBalancer=app/my-alb/abc123 --start 14d --period 86400 --stat Sum
+awst cw stat AWS/EC2 CPUUtilization --dim InstanceId=i-xxx --stat Average --csv
+awst cw stat AWS/ApplicationELB RequestCount \
+  --dim LoadBalancer=app/my-alb/abc123 --stat Sum --json
+
+awst cw alarms                           # アラーム一覧
+awst cw alarms --state ALARM             # 状態で絞り込み
+awst cw alarms --csv
+awst cw alarm my-alarm                   # アラーム詳細
+awst cw alarm my-alarm --json
+```
+
+補足:
+
+- `logs` / `alarms` は `log ls` / `alarm ls` の省略形（`alarm <name>` は `alarm show <name>` と同等）
+- `--since` / `--to` は `10m` `2h` `1d`（相対）、epoch、ISO8601 を受け付ける（`--to` の相対値は現在時刻からの時刻とみなす）
+- `query` は Logs Insights を非同期実行し完了を待つ（タイムアウト既定 60 秒、超過時は `stop-query` でキャンセルして終了）
+- `stream ls <log-group>` でログストリーム一覧も取得可能
+- `stat` は `aws cloudwatch get-metric-statistics` の wrapper（`--dim` は複数回指定可、`--stat` は `Sum,Average` のようにカンマ区切りで複数指定可、既定 `--start 1h` `--period 300` `--stat Average`）
+
 #### その他
 
 ```bash
@@ -328,7 +413,10 @@ awst waf ipset show my-ipset         # IP set 詳細表示（IP アドレス一�
 awst waf ipset ls --scope REGIONAL   # リージョナル IP set 一覧（現在のリージョン）
 awst waf rulegroup ls    # Rule group 一覧
 awst waf rulegroup show my-rule-group # Rule group 詳細表示
-awst sg ls               # セキュリティグループ一覧
+awst sg ls               # セキュリティグループ一覧（Region 列付き）
+awst sg ls --all-regions # 全リージョンの SG 一覧（ヘッダ1回）
+awst sg ls --all-regions --csv
+awst sg ls --region ap-northeast-1
 awst acm ls              # 証明書一覧
 ```
 
@@ -411,108 +499,19 @@ gcloudt dns zones                   # Cloud DNS マネージドゾーン一覧
 gcloudt dns records ZONE            # ゾーン内のレコードセット一覧
 ```
 
-### GCP Lite CLI (`gclt`)
-
-`gclt` は [aktus-tk/gcp](https://github.com/aktus-tk/gcp)（gcloud-lite、Go 実装）のラッパです。
-`gcloud` を呼ばずに gcloud-lite バイナリで Google Cloud API を直接叩くため高速です
-（`gclt gce ls` は約 1 秒、`gcloudt gce ls` は 1 分以上かかるプロジェクトでも動作）。
-出力は `gcloud` のテーブル形式に準拠します。
-
-#### Compute Engine (GCE)
-
-```bash
-gclt gce ls                          # インスタンス一覧（gcloud 形式テーブル）
-gclt gce show INSTANCE_NAME          # インスタンス詳細
-gclt gce disks                       # ディスク一覧
-gclt gce addresses                   # 予約済み IP 一覧
-gclt gce snapshots                   # スナップショット一覧
-```
-
-#### VPC Firewall
-
-```bash
-gclt firewall ls                     # ファイアウォールルール一覧
-gclt firewall show RULE_NAME         # ルール詳細（全フィールド）
-gclt firewall update NAME --add-source-ranges NEW_IP/32 --dry-run   # sourceRanges 追加（冪等）
-gclt firewall update NAME --remove-source-ranges OLD_IP/32 --dry-run # sourceRanges 削除（冪等）
-gclt firewall create admin-ssh --network default --allow tcp:22 --source-ranges IP/32 --target-tags admin-ssh --dry-run
-# 更新系は確認プロンプトあり（--yes で省略）
-# 注意: 既存の VPC firewall rules（SSH 許可ルール含む）は変更・削除しない。
-# 管理用 SSH は次の Cloud NGFW（fwpolicy + addrgroup）を「追加するだけ」で用意する。
-
-#### Cloud NGFW (fwpolicy / addrgroup)
-
-```bash
-gclt fwpolicy ls                                # global network firewall policies 一覧
-gclt fwpolicy show NAME                         # rules + associations 詳細
-gclt fwpolicy create admin-ssh --dry-run        # 冪等
-gclt fwpolicy assoc add admin-ssh --network vest --dry-run   # 冪等
-gclt fwpolicy rule add admin-ssh --priority 1000 --direction INGRESS --action allow \
-    --layer4 tcp:22 \
-    --src-address-groups organizations/82414925066/locations/global/addressGroups/admin-ssh \
-    --description admin-ssh --dry-run           # priority 重複時 no-op
-gclt fwpolicy rule rm admin-ssh --priority 1000 --dry-run    # 無ければ no-op
-
-gclt addrgroup ls --org 82414925066             # 組織レベル（--org 省略で project）
-gclt addrgroup show admin-ssh --org 82414925066
-gclt addrgroup create admin-ssh --type IPV4 --capacity 50 --org 82414925066 --dry-run
-gclt addrgroup add admin-ssh NEW_IP --org 82414925066 --dry-run      # 冪等
-gclt addrgroup remove admin-ssh OLD_IP --org 82414925066 --dry-run   # 冪等
-gclt addrgroup set admin-ssh --items IP,... --org 82414925066 --dry-run
-# fwpolicy / addrgroup の更新系も --dry-run / 確認プロンプト（--yes で省略）。
-# networksecurity API が対象 project で無効だと組織レベルは読めない（dry-run は続行）。
-# 運用方針: 既存の VPC firewall rules / SG ルールは変更・削除しない。
-# 管理用 SSH は fwpolicy + addrgroup を「追加するだけ」で用意し、
-# IP 変更時はアドレスグループの中身だけを更新する（add → SSH 確認 → 旧IP remove）。
-```
-```
-
-#### Service Account / IAM
-
-```bash
-gclt sa ls                           # Service Account 一覧
-gclt iam policy                      # プロジェクト IAM ポリシー
-gclt iam service-accounts            # Service Account 一覧
-```
-
-#### Cloud Storage (GCS)
-
-```bash
-gclt gcs ls                          # バケット一覧
-gclt gcs ls BUCKET_NAME              # オブジェクト一覧
-```
-
-#### Cloud Load Balancer
-
-```bash
-gclt clb ls                          # ロードバランサー一覧
-gclt clb info NAME                   # LB トポロジ
-gclt clb backends                    # Backend Service 一覧
-gclt clb health NAME                 # ヘルスチェック詳細
-```
-
-#### ネットワーク・DNS
-
-```bash
-gclt network ls                      # VPC ネットワーク一覧
-gclt network routes                  # ルート一覧
-gclt network routers                 # Cloud Router（NAT 含む）一覧
-gclt dns zones                       # マネージドゾーン一覧
-gclt dns records ZONE                # レコードセット一覧
-```
-
-未実装のサブコマンドは `aktus-tk/gcp`（gcloud-lite 本体）で追加実装する。
-対応状況は `gclt <command> help` を参照。
-
 ### Tencent Cloud CLI (`tcclit`)
 
-`tccli` ラッパーと `tc-assume` による AssumeRole 認証については [README_tccli.md](README_tccli.md) を参照。
+`tccli` ラッパーと `tc-assume` による AssumeRole 認証については [README_tccli.md](docs/tccli.md) を参照。
 
 #### 認証 (tc-assume)
 
 ```bash
-tcclit login                    # tc-assume login（TENCENTCLOUD_PROFILE）
-tcclit login PROFILE            # tc-assume login PROFILE
+tcclit login                    # tc-assume login（rhems）
+tcclit login --browsh           # tc-assume login --browsh
+tcclit open .                   # デフォルトコンソール（要 TENCENTCLOUD_PROFILE）
+tcclit open cvm                 # CVM コンソール
+tcclit open tke --print-url     # ブラウザを起動せずログイン URL を出力（リモートからローカルブラウザで開く場合等）
+tcclit open --servicemap        # 利用可能なサービス一覧
 ```
 
 #### CAM（認証・権限の確認）
@@ -522,7 +521,7 @@ tcclit cam me          # 現在の caller とロール/ポリシー
 tcclit cam account     # アカウントサマリ + AppId
 tcclit cam policy ls   # カスタムポリシー一覧
 tcclit cam policy show 123456        # ポリシー詳細（ID 指定）
-tcclit cam policy show WORKER        # ポリシー詳細（名前指定）
+tcclit cam policy show RHEMS-WORKER  # ポリシー詳細（名前指定）
 tcclit cam user ls     # サブユーザー一覧
 ```
 
@@ -534,20 +533,9 @@ tcclit cam user ls     # サブユーザー一覧
 tcclit cvm ls           # インスタンス一覧
 tcclit cvm ls --csv     # CSV 形式
 tcclit cvm types        # 使用可能なインスタンスタイプ一覧
+tcclit cvm regions      # 利用可能なリージョン ID 一覧
 tcclit cvm start NAME   # インスタンスを起動
 tcclit cvm stop NAME    # 実行予定コマンドのみ表示（実行しない）
-```
-
-#### Cloud Block Storage (CBS)
-
-```bash
-tcclit cbs disk ls               # ディスク一覧
-tcclit cbs disk ls --csv         # CSV 形式
-tcclit cbs disk show ID|NAME     # ディスク詳細 (JSON)
-tcclit cbs snapshot ls                       # スナップショット一覧
-tcclit cbs snapshot ls --csv                 # CSV 形式
-tcclit cbs snapshot create DISK_ID_OR_NAME [NAME]   # スナップショット取得
-tcclit cbs snapshot delete SNAPSHOT_ID       # 実行予定コマンドのみ表示（実行しない）
 ```
 
 #### Tencent Kubernetes Engine (TKE)
@@ -604,26 +592,6 @@ tcclit vpc sg ls --detail                  # 全 SG の Ingress/Egress ルール
 tcclit vpc sg ls --detail --cidr 18.180.232.11         # 指定 CIDR を含むルールのみ
 tcclit vpc sg ls --detail --cidr 18.180.232.11 --ingress-only
 tcclit vpc sg show SG_ID_OR_NAME           # 1 つの SG のルール（表形式）
-
-# アドレステンプレート（IP リスト）操作 — 更新系は --dry-run / 確認プロンプト（--yes で省略）
-tcclit vpc addr ls                         # テンプレート一覧（id, name, ips）
-tcclit vpc addr show NAME                  # 1 テンプレートの IP 一覧
-tcclit vpc addr create NAME --ips IP[,IP...] --dry-run   # --desc S で備考指定可（既定 'tk home-note'）
-tcclit vpc addr add NAME NEW_IP --dry-run     # 冪等（既にあれば no-op、--desc S で備考指定可）
-tcclit vpc addr remove NAME OLD_IP --dry-run  # 冪等（無ければ no-op）
-tcclit vpc addr set NAME --ips IP[,IP...] --dry-run   # 全置換
-
-# SG ルール操作（アドレステンプレート参照 or CIDR 直指定）
-tcclit vpc sg rule add SG --proto tcp --port 22 --addr-template admin-ssh --desc admin-ssh --dry-run
-tcclit vpc sg rule rm SG --proto tcp --port 22 --addr-template admin-ssh --dry-run
-
-# 管理用 SSH の想定運用（テンプレート admin-ssh を SG ルールから参照）:
-#   SG ルールは既存ルールを触らず「新規ルールを 1 つ追加するだけ」
-#   （tcclit vpc sg rule add で作成。既存ルールの変更・削除はしない）
-#   IP 変更時はアドレステンプレートの中身だけを更新する:
-#   1. tcclit vpc addr add admin-ssh NEW_IP --dry-run → 確認後 --yes で実行
-#   2. NEW_IP から SSH できることを確認
-#   3. tcclit vpc addr remove admin-ssh OLD_IP --dry-run → 確認後 --yes で実行
 ```
 
 ### Cloudflare CLI (`cft`)
@@ -655,7 +623,7 @@ cft route list                   # tunnel route 一覧 (network, tunnel_id, comm
 #### Zero Trust Gateway rules
 
 ```bash
-cft gateway list                 # Gateway rules 一覧
+cft gateway list                 # Gateway rules 一覧 (precedence, name, action, enabled, traffic, filters, id)
 cft gateway list dns             # dns / http / network で絞り込み
 cft gateway list http --json
 ```
@@ -682,17 +650,14 @@ cft raw tunnels list             # 公式 cf CLI にそのまま委譲
 cloud-cli/
 ├── aws-cli/
 │   ├── bin/awst
-│   ├── commands/     # ec2, eks, iam, secrets, alb, r53, billing, …
+│   ├── commands/     # ec2, eks, iam, secrets, resources, alb, r53, billing, …
 │   └── skills/       # ドメイン別 Skill（例: billing）
 ├── g-cli/
 │   ├── bin/gcloudt
 │   └── commands/     # gce, firewall, sa, gcs, clb, project, network, dns, …
-├── glite-cli/
-│   ├── bin/gcl       # gcloud-lite (aktus-tk/gcp) ラッパ
-│   └── commands/     # gce, firewall, sa, gcs, clb, project, network, dns
 ├── tc-cli/
-    ├── bin/          # tcclit, tccli（tc-assume 連携）
-    └── commands/     # cam, cvm, vpc, teo, cdn, ssl, lb
+│   ├── bin/          # tcclit, tccli（tc-assume 連携）
+│   └── commands/     # cam, cvm, vpc, teo, cdn, ssl, lb
 └── cf-cli/
     ├── bin/cft
     ├── commands/     # tunnel, route, gateway, device, user
@@ -703,7 +668,7 @@ Agent がコードを変更する際の規則とディレクトリの詳細は [
 
 ## セキュリティ
 
-セキュリティに関するベストプラクティスや脆弱性の報告方法については、[SECURITY.md](SECURITY.md) を参照してください。
+セキュリティに関するベストプラクティスや脆弱性の報告方法については、[SECURITY.md](docs/SECURITY.md) を参照してください。
 
 **重要**: このツールは認証情報を保存・管理しません。認証は各クラウドプロバイダーの CLI ツール（`aws`, `gcloud`, `tccli`）および Tencent Cloud の場合は `tc-assume` によって処理されます。
 

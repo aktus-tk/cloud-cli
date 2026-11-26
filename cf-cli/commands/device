@@ -11,8 +11,8 @@ shift || true
 device_ls() {
   cf_debug_exit zero-trust devices list
   echo -e "Name\tEmail\tModel\tOS\tVersion\tStatus\tID"
-  "$CF_BIN" zero-trust devices list | jq -r '
-    .result[]?
+  cf_list_json zero-trust devices list | jq -r '
+    .[]
     | [
         (.name // ""),
         (.user.email // ""),

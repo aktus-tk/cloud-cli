@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -e
+
+source "$(dirname "$(readlink -f "$0")")/_lib/cf.sh"
+
+cmd=$1
+shift || true
+
+# Zero Trust Access アプリケーション一覧 (ZTNA 対象アプリの確認)
+application_list() {
+  cf_debug_exit zero-trust access applications list
+  echo -e "Name\tDomain\tType\tID"
+  cf_list_json zero-trust access applications list | jq -r '
+    .[]
+    | [
+        (.name // ""),
+        ([.domain // "", (.self_hosted_domains // [])[]?] | map(select(. != "")) | join(",")),
+        (.type // ""),
+        (.id // "")
+      ]
+    | @tsv
+  ' | sort | cf_table
+}
+
+# Access アプリケーションの認証ログ (login 許可 / 拒否)。
+# cf CLI が公開していないため REST API を直接照会する (読み取り専用)。
+application_logs() {
+  local limit=50 as_json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit) limit="$2"; shift 2 ;;
+      --json) as_json=1; shift ;;
+      *) echo "unknown application logs option: $1" >&2; exit 1 ;;
+    esac
+  done
+  local acct
+  acct="$(cf_account_id)" || exit 1
+  [[ -n "$acct" ]] || { echo "could not resolve account id (set CLOUDFLARE_ACCOUNT_ID)" >&2; exit 1; }
+  cf_debug_exit "GET accounts/${acct}/access/logs/access_requests?limit=${limit}"
+  local out
+  out="$(cf_rest_get "accounts/${acct}/access/logs/access_requests?limit=${limit}")"
+  if [[ "$as_json" -eq 1 ]]; then
+    printf '%s\n' "$out" | jq -c 'if type == "array" then . else (.result // []) end'
+    return 0
+  fi
+  echo -e "Time\tUser\tApp\tAction\tAllowed\tIP"
+  printf '%s\n' "$out" | jq -r '
+    (.result // .)[]?
+    | [
+        (.created_at // ""),
+        (.user_email // ""),
+        (.app_name // ""),
+        (.action // ""),
+        ((.allowed // "") | tostring),
+        (.ip_address // "")
+      ]
+    | @tsv
+  ' | sort -r | cf_table
+}
+
+usage() {
+  cat <<EOF
+usage: cft application <command>
+
+Zero Trust Access アプリケーション (ZTNA) の調査（読み取り専用）
+
+commands:
+  list              Access アプリケーション一覧
+                    (cf zero-trust access applications list)
+  logs              Access 認証ログ (login の許可 / 拒否)
+                    options:
+                      --limit N   最大 N 件 (既定 50)
+                      --json      JSON で出力
+  --json            各コマンドの JSON をそのまま出力
+  raw ARGS...       公式 cf CLI にそのまま委譲
+
+examples:
+  cft application list
+  cft application logs
+  cft application logs --limit 100 --json
+EOF
+}
+
+case "$cmd" in
+  ls|list)
+    if [[ "${1:-}" == "--json" ]]; then
+      cf_json zero-trust access applications list
+    else
+      application_list
+    fi
+    ;;
+  logs|log)
+    application_logs "$@"
+    ;;
+  --json)
+    application_list
+    ;;
+  raw)
+    exec "$CF_BIN" "$@"
+    ;;
+  help|-h|--help|"")
+    usage
+    ;;
+  *)
+    echo "unknown application command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
