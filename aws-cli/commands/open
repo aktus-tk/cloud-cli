@@ -63,18 +63,22 @@ elif [[ -n "${AWS_DEFAULT_REGION:-}" ]]; then
   region_args+=(--region "$AWS_DEFAULT_REGION")
 fi
 
-# --print-url: URL を stdout に出力（granted の -u）。ブラウザは開かない。
+# --print-url: URL を stdout に出力（granted は -c -u の併用が必要）。
 # 任意の位置に書けるよう引数から除去する。
 console_mode=(-c)
+print_url=0
 _args=()
 for _a in "$@"; do
   if [[ "$_a" == "--print-url" ]]; then
-    console_mode=(-u)
+    print_url=1
   else
     _args+=("$_a")
   fi
 done
 set -- "${_args[@]}"
+if [[ "$print_url" == 1 ]]; then
+  console_mode+=(-u)
+fi
 
 case "${1:-}" in
   help|--help|-h)
